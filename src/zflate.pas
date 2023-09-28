@@ -160,10 +160,10 @@ begin
     result := true;
   end;
 
-  //if lastchunk then begin
-  //  i := deflateEnd(z.z);
-  //  result := i = Z_OK;
-  //end;
+  if lastchunk then begin
+    i := inflateEnd(z.z);
+    result := i = Z_OK;
+  end;
 end;
 
 function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
