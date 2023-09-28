@@ -40,13 +40,15 @@ type
 
   tzlibinfo = record
     streamat: dword;
+    footerlen: dword;
   end;
 
   tgzipinfo = record
     modtime: dword;
     filename: pchar;
     comment: pchar;
-    streamat: dword;
+    streamat: dword;  
+    footerlen: dword;
   end;
 
 const
@@ -193,7 +195,9 @@ function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
 begin
   fillchar(info, sizeof(info), 0);
   result := (pbyte(data)^ = $78) and (pbyte(data+1)^ in [$01, $5e, $9c, $da]);
-  if result then info.streamat := 2;
+  if not result then exit; 
+  info.footerlen := 4;
+  info.streamat := 2;
 end;
 
 function zreadgzipheader(data: pointer; var info: tgzipinfo): boolean;
@@ -204,6 +208,7 @@ begin
   fillchar(info, sizeof(info), 0);
   result := false;
   if not ((pbyte(data)^ = $1f) and (pbyte(data+1)^ = $8b)) then exit;
+  info.footerlen := 8;
 
   //mod time
   move((data+4)^, info.modtime, 4);
@@ -417,7 +422,6 @@ begin
 
   //filename
   if filename <> '' then begin
-    writeln('* createing fileame in header');
     flags := flags or $08;
     result += filename;
     result += #$00;
