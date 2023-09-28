@@ -240,7 +240,7 @@ begin
   if compressionlevel = 9 then result[9] := #$02; //best compression
   if compressionlevel = 1 then result[9] := #$04; //best speed
 
-  result[10] := #$00; //file system
+  result[10] := #$FF; //file system (00 = FAT?)
 
   //optional headerss
 
