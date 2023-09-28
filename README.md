@@ -2,14 +2,18 @@
 
 The goal is to make these compression functions work exactly like in PHP
 
-- gzdeflate()
-- gzcompress()
-- gzencode()
+| Function | Format | Status |
+|-|-|-|
+| gzdeflate() |  pure deflate | ✔ |
+| gzcompress() |  ZLIB | ✔ |
+| gzencode() |  GZIP | ✔ |
 
 And decompression
-- gzinflate()
-- gzuncompress()
-- gzdecode()
+| Function | Format | Status |
+|-|-|-|
+| gzinflate() |  pure deflate | ✔ |
+| gzuncompress() |  ZLIB | ✘ |
+| gzdecode() |  GZIP | ✔ |
 
 Also leaving possiblity to read big files by chunks easily
 
