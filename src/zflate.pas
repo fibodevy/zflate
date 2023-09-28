@@ -131,11 +131,6 @@ begin
   end;
 end;
 
-function zinflatefinish(var z: tzflate): dword;
-begin
-  result := zinflatewrite(z, nil, 0);
-end;
-
 // -- deflate -----------------------------
 
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
