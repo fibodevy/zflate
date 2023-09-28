@@ -10,6 +10,7 @@ type
   tzflate = record
     z: z_stream;
     totalout: qword;
+    bytesavailable: dword;
     buffer: array[0..1024*32-1] of byte;
     error: string;
   end;
@@ -25,17 +26,17 @@ type
   end;
 
 const
-  ZSTREAM_DEFLATE = 0;
-  ZSTREAM_ZLIB   = 1;
-  ZSTREAM_GZIP   = 2;
+  ZSTREAM_NONE = 0;
+  ZSTREAM_ZLIB = 1;
+  ZSTREAM_GZIP = 2;
 
 //deflate chunks
 function zdeflateinit(var z: tzflate; level: dword=9): boolean;
-function zdeflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): dword;
+function zdeflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 
 //inflate chunks
 function zinflateinit(var z: tzflate): boolean;
-function zinflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): dword;
+function zinflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 
 //find out where deflate stream starts and whats its size
 function zfindstream(data: pointer; size: dword; var streamtype: integer; var startsat: dword; var streamsize: dword): boolean;      
@@ -73,10 +74,10 @@ function gcdecode(str: string): string;
 
 implementation
 
-function zerror(var z: tzflate; msg: string): dword;
+function zerror(var z: tzflate; msg: string): boolean;
 begin
   z.error := msg;
-  result := 0;
+  result := false;
 end;
 
 // -- deflate chunks ----------------------
@@ -89,11 +90,11 @@ begin
   result := true;
 end;
 
-function zdeflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): dword;
+function zdeflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 var
   i: integer;
 begin
-  result := 0;
+  result := false;
 
   if size > 1024*32 then exit(zerror(z, 'max single chunk size is 32k'));
 
@@ -112,8 +113,9 @@ begin
   if i = Z_DATA_ERROR then exit(zerror(z, 'data error'));
 
   if (i = Z_OK) or (i = Z_STREAM_END) then begin
-    result := z.z.total_out-z.totalout;
-    z.totalout += result;
+    z.bytesavailable := z.z.total_out-z.totalout;
+    z.totalout += z.bytesavailable;
+    result := true;
   end;
 end;
 
@@ -127,11 +129,11 @@ begin
   result := true;
 end;
 
-function zinflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): dword;
+function zinflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 var
   i: integer;
 begin
-  result := 0;
+  result := false;
 
   z.z.next_in := data;
   z.z.avail_in := size;
@@ -148,8 +150,9 @@ begin
   if i = Z_DATA_ERROR then exit(zerror(z, 'data error'));
 
   if (i = Z_OK) or (i = Z_STREAM_END) then begin
-    result := z.z.total_out-z.totalout;
-    z.totalout += result;
+    z.bytesavailable := z.z.total_out-z.totalout;
+    z.totalout += z.bytesavailable;
+    result := true;
   end;
 end;
 
@@ -170,14 +173,13 @@ end;
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 var
   z: tzflate;
-  d: dword;
 begin
   result := false;
   if not zdeflateinit(z, 9) then exit;
-  d := zdeflatewrite(z, data, size, true);
-  output := getmem(d);
-  move(z.buffer[0], output^, d);
-  outputsize := d;
+  if not zdeflatewrite(z, data, size, true) then exit;
+  output := getmem(z.bytesavailable);
+  move(z.buffer[0], output^, z.bytesavailable);
+  outputsize := z.bytesavailable;
   result := true;
 end;
 
@@ -198,14 +200,13 @@ end;
 function gzinflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 var
   z: tzflate;
-  d: dword;
 begin
   result := false;
   if not zinflateinit(z) then exit;
-  d := zinflatewrite(z, data, size, true);
-  output := getmem(d);
-  move(z.buffer[0], output^, d);
-  outputsize := d;
+  if not zinflatewrite(z, data, size, true) then exit;
+  output := getmem(z.bytesavailable);
+  move(z.buffer[0], output^, z.bytesavailable);
+  outputsize := z.bytesavailable;
   result := true;
 end;
 
