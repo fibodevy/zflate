@@ -1,0 +1,20 @@
+#compiled things
+lib
+*.a
+*.compiled
+*.o
+*.ppu
+*.s
+*.exe
+*.dll
+
+#project session
+*.lps
+*.ctps
+
+#tracert output
+*.trc
+
+#custom things
+bak
+backup
