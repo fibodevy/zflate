@@ -10,9 +10,24 @@ type
   tzflate = record
     z: z_stream;
     totalout: qword;
-    buffer: array of byte;
+    buffer: array[0..1024*32-1] of byte;
     error: string;
   end;
+
+  tzlibinfo = record
+    adler: dword;
+  end;
+
+  tgzipinfo = record
+    modtime: dword;
+    originalsize: dword;
+    crc: dword;
+  end;
+
+const
+  ZSTREAM_DEFLATE = 0;
+  ZSTREAM_ZLIB   = 1;
+  ZSTREAM_GZIP   = 2;
 
 //deflate chunks
 function zdeflateinit(var z: tzflate; level: dword=9): boolean;
@@ -21,6 +36,13 @@ function zdeflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: bo
 //inflate chunks
 function zinflateinit(var z: tzflate): boolean;
 function zinflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): dword;
+
+//find out where deflate stream starts and whats its size
+function zfindstream(data: pointer; size: dword; var streamtype: integer; var startsat: dword; var streamsize: dword): boolean;      
+//read zlib header
+function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
+//read gzip header
+function zreadgzipheader(data: pointer; var info: tgzipinfo): boolean;
 
 //compress (DEFLATE) whole buffer at once
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
@@ -64,7 +86,6 @@ begin
   result := false;     
   fillchar(z, sizeof(z), 0);
   if deflateInit2(z.z, level, Z_DEFLATED, -MAX_WBITS, DEF_MEM_LEVEL, 0) <> Z_OK then exit;
-  setlength(z.buffer, 1024*32);
   result := true;
 end;
 
@@ -73,6 +94,8 @@ var
   i: integer;
 begin
   result := 0;
+
+  if size > 1024*32 then exit(zerror(z, 'max single chunk size is 32k'));
 
   z.z.next_in := data;
   z.z.avail_in := size;
@@ -101,7 +124,6 @@ begin
   result := false;
   fillchar(z, sizeof(z), 0);
   if inflateInit2(z.z, -MAX_WBITS) <> Z_OK then exit;
-  setlength(z.buffer, 1024*32);
   result := true;
 end;
 
@@ -129,6 +151,18 @@ begin
     result := z.z.total_out-z.totalout;
     z.totalout += result;
   end;
+end;
+
+function zfindstream(data: pointer; size: dword; var streamtype: integer; var startsat: dword; var streamsize: dword): boolean;
+begin
+end;
+
+function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
+begin
+end;
+
+function zreadgzipheader(data: pointer; var info: tgzipinfo): boolean; 
+begin
 end;
 
 // -- deflate -----------------------------
@@ -189,12 +223,28 @@ end;
 
 // -- ZLIB compress -----------------------
 
-function makezlibheader: string;
+function makezlibheader(compressionlevel: integer): string;
 begin
+  result := #$78;
+
+  case compressionlevel of
+    1: result += #$01;
+    2: result += #$5e;
+    3: result += #$5e;
+    4: result += #$5e;
+    5: result += #$5e;
+    6: result += #$9c;
+    7: result += #$da;
+    8: result += #$da;
+    9: result += #$da;
+  else
+    result += #$da;
+  end;
 end;
 
 function makezlibfooter(adler: dword): string;
 begin
+  //adler32 checksum
 end;
 
 function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
@@ -251,7 +301,7 @@ end;
 
 function makegzipfooter(originalsize: dword; crc: dword): string;
 begin
-  //checksum, then filesize
+  //crc32b checksum, then filesize
 end;
 
 function gzencode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
