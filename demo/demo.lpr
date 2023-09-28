@@ -110,13 +110,12 @@ begin
   writeln('test result = ', gzdecode(d) = s);
 end;
 
-
 begin
   try
-    //rundemo1;
+    rundemo1;
     //rundemo2;
     //rundemo3;
-    rundemo4;
+    //rundemo4;
   finally
     readln;
   end;
