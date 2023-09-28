@@ -55,9 +55,9 @@ function gzinflate(data: pointer; size: dword; var output: pointer; var outputsi
 function gzinflate(str: string): string;
 
 //compress (ZLIB) whole buffer at once
-function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
 //compress (ZLIB) whole string at once
-function gzcompress(str: string): string;
+function gzcompress(str: string; level: dword=9): string;
 //decompress (ZLIB) whole buffer at once
 function gzuncompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 //decompress (ZLIB) whole string at once
@@ -317,15 +317,41 @@ end;
 
 function makezlibfooter(adler: dword): string;
 begin
-  //adler32 checksum
+  setlength(result, 4);
+  move(adler, result[1], 4);
 end;
 
-function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
+var
+  z: tzflate;
+  header, footer: string;
 begin
+  result := false;
+  if not zdeflateinit(z) then exit;
+  if not zdeflatewrite(z, data, size, true) then exit;
+
+  header := makezlibheader(level);
+  footer := makezlibfooter(adler32(0, data, size));
+
+  outputsize := length(header)+z.bytesavailable+length(footer);
+  output := getmem(outputsize);
+
+  move(header[1], output^, length(header));
+  move(z.buffer[0], (output+length(header))^, z.bytesavailable);
+  move(footer[1], (output+length(header)+z.bytesavailable)^, length(footer));
+
+  result := true;
 end;
 
-function gzcompress(str: string): string;
+function gzcompress(str: string; level: dword=9): string;
+var
+  p: pointer;
+  d: dword;
 begin
+  result := '';
+  if not gzcompress(@str[1], length(str), p, d, level) then exit;
+  setlength(result, d);
+  move(p^, result[1], d);
 end;
 
 // -- ZLIB decompress ---------------------

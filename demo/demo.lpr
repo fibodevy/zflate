@@ -50,11 +50,11 @@ begin
   end;
 end;
 
+//GZIP compression
 procedure rundemo2;
 var
   h: hwnd;
   s: string;
-  z: tzflate;
 begin
   //create gzipped file
   s := 'contents of gzipped file';
@@ -74,10 +74,35 @@ begin
   writeln('done');
 end;
 
+//ZLIB compression
+procedure rundemo3;
+var
+  h: hwnd;
+  s: string;
+begin
+  //create gzipped file
+  s := 'zlib compressed contents';
+
+  s := gzcompress(s);
+  writeln('compressed size = ', length(s));
+
+  //delete old file if exists
+  SetFileAttributes('compressed.zlib', 0);
+  DeleteFile('compressed.zlib');
+
+  //save new file
+  h := _lcreat('compressed.zlib', OF_WRITE);
+  _lwrite(h, @s[1], length(s));
+  _lclose(h);
+
+  writeln('done');
+end;
+
 begin
   try
     //rundemo1;
-    rundemo2;
+    //rundemo2;
+    rundemo3;
   finally
     readln;
   end;
