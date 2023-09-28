@@ -69,6 +69,8 @@ function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
 function zreadgzipheader(data: pointer; var info: tgzipinfo): boolean;
 //find out where deflate stream starts and what is its size
 function zfindstream(data: pointer; size: dword; var streamtype: dword; var startsat: dword; var streamsize: dword): boolean;
+//get stream basic info; by reading just few first bytes you will know the stream type, where is deflate start and how many bytes are trailing bytes (footer)
+function zstreambasicinfo(data: pointer; var streamtype: dword; var startsat: dword; var trailing: dword): boolean;
 
 //compress (DEFLATE) whole buffer at once
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
@@ -264,6 +266,29 @@ begin
     streamtype := ZSTREAM_GZIP;
     startsat := gzip.streamat;
     streamsize := size-startsat-8; //footer: crc32 + original file size
+    exit(true);
+  end;
+end;
+
+function zstreambasicinfo(data: pointer; var streamtype: dword; var startsat: dword; var trailing: dword): boolean;
+var
+  zlib: tzlibinfo;
+  gzip: tgzipinfo;
+begin
+  result := false;
+  streamtype := 0;
+
+  if zreadzlibheader(data, zlib) then begin
+    streamtype := ZSTREAM_ZLIB;
+    startsat := zlib.streamat;
+    trailing := 4; //footer: adler32
+    exit(true);
+  end;
+
+  if zreadgzipheader(data, gzip) then begin
+    streamtype := ZSTREAM_GZIP;
+    startsat := gzip.streamat;
+    trailing := 8; //footer: crc32 + original file size
     exit(true);
   end;
 end;
