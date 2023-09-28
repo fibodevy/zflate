@@ -139,21 +139,57 @@ end;
 // -- deflate -----------------------------
 
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+var
+  z: tzflate;
+  d: dword;
 begin
+  result := false;
+  if not zdeflateinit(z, 9) then exit;
+  d := zdeflatewrite(z, data, size, true);
+  output := getmem(d);
+  move(z.buffer[0], output^, d);
+  outputsize := d;
+  result := true;
 end;
 
 function gzdeflate(str: string): string;
+var
+  p: pointer;
+  d: dword;
 begin
+  result := '';
+  if not gzdeflate(@str[1], length(str), p, d) then exit;
+  setlength(result, d);
+  move(p^, result[1], d);
+  freemem(p);
 end;
 
 // -- inflate -----------------------------
 
 function gzinflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+var
+  z: tzflate;
+  d: dword;
 begin
+  result := false;
+  if not zinflateinit(z) then exit;
+  d := zinflatewrite(z, data, size, true);
+  output := getmem(d);
+  move(z.buffer[0], output^, d);
+  outputsize := d;
+  result := true;
 end;
 
 function gzinflate(str: string): string;
+var
+  p: pointer;
+  d: dword;
 begin
+  result := '';
+  if not gzinflate(@str[1], length(str), p, d) then exit;
+  setlength(result, d);
+  move(p^, result[1], d); 
+  freemem(p);
 end;
 
 // -- ZLIB compress -----------------------
