@@ -455,14 +455,15 @@ function gzdecode(data: pointer; size: dword; var output: pointer; var outputsiz
 var
   gzip: tgzipinfo;
   z: tzflate;
-  //originalsize: dword;
+  originalsize: dword;
   checksum: dword;
 begin
   result := false;
   if not zreadgzipheader(data, gzip) then exit;
   if not zinflateinit(z) then exit;
   if not zinflatewrite(z, data+gzip.streamat, size-gzip.streamat-8, true) then exit;
-  //originalsize := pdword(data+size-4)^;
+  originalsize := pdword(data+size-4)^;
+  if originalsize <> z.bytesavailable then exit; //invalid size
   checksum := pdword(data+size-8)^;
   if crc32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit; //invalid checsum
   outputsize := z.bytesavailable;
