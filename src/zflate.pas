@@ -194,6 +194,14 @@ end;
 
 // -- ZLIB compress -----------------------
 
+function makezlibheader: string;
+begin
+end;
+
+function makezlibfooter(adler: dword): string;
+begin
+end;
+
 function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 begin
 end;
@@ -213,6 +221,43 @@ begin
 end;
 
 // -- GZIP compress -----------------------
+
+function makegzipheader(compressionlevel: integer; filename: string=''): string;
+var
+  flags: byte;
+  modtime: dword;
+begin
+  setlength(result, 10);
+  result[1] := #$1f; //signature
+  result[2] := #$8b; //signature
+  result[3] := #$08; //deflate algo
+
+  //modification time
+  modtime := 0;
+  move(modtime, result[5], 4);
+
+  result[9] := #$00; //compression level
+  if compressionlevel = 9 then result[9] := #$02; //best compression
+  if compressionlevel = 1 then result[9] := #$04; //best speed
+
+  result[10] := #$00; //file system
+
+  //optional headerss
+
+  //filename
+  if filename <> '' then begin
+    flags := flags and $08;
+    result += filename;
+    result += #$00;
+  end;
+
+  result[4] := chr(flags);
+end;
+
+function makegzipfooter(originalsize: dword; crc: dword): string;
+begin
+  //checksum, then filesize
+end;
 
 function gzencode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 begin
