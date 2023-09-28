@@ -117,6 +117,11 @@ begin
     z.totalout += z.bytesavailable;
     result := true;
   end;
+
+  if lastchunk then begin
+    i := deflateEnd(z.z);
+    result := i = Z_OK;
+  end;
 end;
 
 // -- inflate chunks ----------------------
@@ -153,6 +158,11 @@ begin
     z.bytesavailable := z.z.total_out-z.totalout;
     z.totalout += z.bytesavailable;
     result := true;
+  end;
+
+  if lastchunk then begin
+    i := deflateEnd(z.z);
+    result := i = Z_OK;
   end;
 end;
 
