@@ -1,6 +1,6 @@
 program demo;
 
-uses SysUtils, zflate, Classes, Windows;
+uses Windows, zflate;
 
 procedure rundemo;
 var
@@ -26,7 +26,6 @@ begin
     writeln('type  = ', type_);
     writeln('start = ', start);
     writeln('size  = ', size);
-    writeln('first byte = ', inttohex(pbyte(@s[1+start])^));
     writeln;
 
     if type_ = ZSTREAM_GZIP then begin
