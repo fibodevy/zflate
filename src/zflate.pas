@@ -16,17 +16,16 @@ type
   end;
 
   tzlibinfo = record
-    adler: dword;
+    streamat: dword;
   end;
 
   tgzipinfo = record
     modtime: dword;
-    originalsize: dword;
-    crc: dword;
+    filename: pchar;
+    streamat: dword;
   end;
 
 const
-  ZSTREAM_NONE = 0;
   ZSTREAM_ZLIB = 1;
   ZSTREAM_GZIP = 2;
 
@@ -38,12 +37,12 @@ function zdeflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: bo
 function zinflateinit(var z: tzflate): boolean;
 function zinflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 
-//find out where deflate stream starts and whats its size
-function zfindstream(data: pointer; size: dword; var streamtype: integer; var startsat: dword; var streamsize: dword): boolean;      
 //read zlib header
 function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
 //read gzip header
 function zreadgzipheader(data: pointer; var info: tgzipinfo): boolean;
+//find out where deflate stream starts and whats its size
+function zfindstream(data: pointer; size: dword; var streamtype: dword; var startsat: dword; var streamsize: dword): boolean;
 
 //compress (DEFLATE) whole buffer at once
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
@@ -156,16 +155,77 @@ begin
   end;
 end;
 
-function zfindstream(data: pointer; size: dword; var streamtype: integer; var startsat: dword; var streamsize: dword): boolean;
-begin
-end;
-
 function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
 begin
+  fillchar(info, sizeof(info), 0);
+  result := (pbyte(data)^ = $78) and (pbyte(data+1)^ in [$01, $5e, $9c, $da]);
+  if result then info.streamat := 2;
 end;
 
-function zreadgzipheader(data: pointer; var info: tgzipinfo): boolean; 
+function zreadgzipheader(data: pointer; var info: tgzipinfo): boolean;
+var
+  flags: byte;
+  w: word;
+begin          
+  fillchar(info, sizeof(info), 0);
+  result := false;
+  if not ((pbyte(data)^ = $1f) and (pbyte(data+1)^ = $8b)) then exit;
+
+  //mod time
+  move((data+4)^, info.modtime, 4);
+
+  //stream position
+  info.streamat := 10;
+
+  //flags
+  flags := pbyte(data+3)^;
+
+  //extra
+  if (flags and $04) <> 0 then begin
+    w := pword(data+info.streamat)^;
+    info.streamat += 2+w;
+  end;
+
+  //filename
+  if (flags and $08) <> 0 then begin
+    info.filename := pchar(data+info.streamat);
+    info.streamat += length(info.filename)+1;
+  end;
+
+  //comment
+  if (flags and $10) <> 0 then begin
+    info.streamat += length(pchar(data+info.streamat))+1;
+  end;
+
+  //crc16?
+  if (flags and $02) <> 0 then begin
+    info.streamat += 2;
+  end;
+
+  result := true;
+end;
+
+function zfindstream(data: pointer; size: dword; var streamtype: dword; var startsat: dword; var streamsize: dword): boolean;
+var
+  zlib: tzlibinfo;
+  gzip: tgzipinfo;
 begin
+  result := false;
+  streamtype := 0;
+
+  if zreadzlibheader(data, zlib) then begin
+    streamtype := ZSTREAM_ZLIB;
+    startsat := zlib.streamat;
+    streamsize := size-startsat-4; //footer: adler32
+    exit(true);
+  end;
+
+  if zreadgzipheader(data, gzip) then begin
+    streamtype := ZSTREAM_GZIP;
+    startsat := gzip.streamat;
+    streamsize := size-startsat-8; //footer: crc32 + original file size
+    exit(true);
+  end;
 end;
 
 // -- deflate -----------------------------
@@ -288,7 +348,8 @@ begin
 
   result[10] := #$FF; //file system (00 = FAT?)
 
-  //optional headerss
+  //optional headers
+  flags := 0;
 
   //filename
   if filename <> '' then begin
