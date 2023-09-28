@@ -22,6 +22,7 @@ type
   tgzipinfo = record
     modtime: dword;
     filename: pchar;
+    comment: pchar;
     streamat: dword;
   end;
 
@@ -194,7 +195,8 @@ begin
 
   //comment
   if (flags and $10) <> 0 then begin
-    info.streamat += length(pchar(data+info.streamat))+1;
+    info.comment := pchar(data+info.streamat);
+    info.streamat += length(info.comment)+1;
   end;
 
   //crc16?
