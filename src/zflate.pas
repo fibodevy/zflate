@@ -72,31 +72,39 @@ function zfindstream(data: pointer; size: dword; var streamtype: dword; var star
 //get stream basic info; by reading just few first bytes you will know the stream type, where is deflate start and how many bytes are trailing bytes (footer)
 function zstreambasicinfo(data: pointer; var streamtype: dword; var startsat: dword; var trailing: dword): boolean;
 
-//compress (DEFLATE) whole buffer at once
+//compress whole DEFLATE buffer at once
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
-//compress (DEFLATE) whole string at once
+//compress whole DEFLATE string at once
 function gzdeflate(str: string): string;
-//decompress (DEFLATE) whole buffer at once
+//decompress whole DEFLATE buffer at once
 function gzinflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
-//decompress (DEFLATE) whole string at once
+//decompress whole DEFLATE string at once
 function gzinflate(str: string): string;
 
-//compress (ZLIB) whole buffer at once
+//make ZLIB header
+function makezlibheader(compressionlevel: integer): string;
+//make ZLIB footer
+function makezlibfooter(adler: dword): string;
+//compress whole ZLIB buffer at once
 function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
-//compress (ZLIB) whole string at once
+//compress whole ZLIB string at once
 function gzcompress(str: string; level: dword=9): string;
-//decompress (ZLIB) whole buffer at once
+//dempress whole ZLIB buffer at once
 function gzuncompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
-//decompress (ZLIB) whole string at once
+//dempress whole ZLIB string at once
 function gzuncompress(str: string): string;
 
-//compress (GZIP) whole buffer at once
+//make GZIP header
+function makegzipheader(compressionlevel: integer; filename: string=''; comment: string=''): string;
+//make GZIP footer
+function makegzipfooter(originalsize: dword; crc: dword): string;
+//compress whole GZIP buffer at once
 function gzencode(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9; filename: string=''; comment: string=''): boolean;
-//compress (GZIP) whole string at once
+//compress whole GZIP string at once
 function gzencode(str: string; level: dword=9; filename: string=''; comment: string=''): string;
-//decompress (GZIP) whole buffer at once
+//decompress whole GZIP buffer at once
 function gzdecode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
-//decompress (GZIP) whole string at once
+//decompress whole GZIP string at once
 function gzdecode(str: string): string;
 
 implementation
@@ -123,6 +131,7 @@ var
 begin
   result := false;
 
+  //try
   if size > 1024*32 then exit(zerror(z, 'max single chunk size is 32k'));
 
   z.z.next_in := data;
@@ -149,6 +158,12 @@ begin
     i := deflateEnd(z.z);
     result := i = Z_OK;
   end;
+
+  //todo: check if this is how it should be done
+
+  //finally
+  //  if not result then deflateEnd(z.z);
+  //end;
 end;
 
 // -- inflate chunks ----------------------
