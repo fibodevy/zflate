@@ -41,7 +41,7 @@ function zinflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: bo
 function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
 //read gzip header
 function zreadgzipheader(data: pointer; var info: tgzipinfo): boolean;
-//find out where deflate stream starts and whats its size
+//find out where deflate stream starts and what is its size
 function zfindstream(data: pointer; size: dword; var streamtype: dword; var startsat: dword; var streamsize: dword): boolean;
 
 //compress (DEFLATE) whole buffer at once

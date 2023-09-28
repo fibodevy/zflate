@@ -20,7 +20,7 @@ begin
 
   writeln('input size = ', length(s));
 
-  //find streamtype
+  //find stream type
   if zfindstream(@s[1], length(s), type_, start, size) then begin
     writeln('found stream');
     writeln('type  = ', type_);
