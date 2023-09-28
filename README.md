@@ -17,4 +17,4 @@ And decompression
 
 Also leaving possiblity to read big files by chunks easily
 
-Unit must be as small as possible (compiled demo has only 78 kB)
+Unit must be as small as possible (compiled demo is less than 60 kB in size)

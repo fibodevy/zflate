@@ -33,6 +33,15 @@
         <Filename Value="..\src\zflate.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>
+      <Unit>
+        <Filename Value="..\src\paszlib\zbase.pas"/>
+        <IsPartOfProject Value="True"/>
+        <UnitName Value="ZBase"/>
+      </Unit>
+      <Unit>
+        <Filename Value="..\src\crc32.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
     </Units>
   </ProjectOptions>
   <CompilerOptions>
