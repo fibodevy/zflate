@@ -2,7 +2,7 @@ program demo;
 
 uses Windows, zflate;
 
-procedure rundemo;
+procedure rundemo1;
 var
   s: string;
   h: hwnd;
@@ -50,9 +50,34 @@ begin
   end;
 end;
 
+procedure rundemo2;
+var
+  h: hwnd;
+  s: string;
+  z: tzflate;
+begin
+  //create gzipped file
+  s := 'contents of gzipped file';
+
+  s := gzencode(s, 9, 'some file name.txt', 'some comment');
+  writeln('compressed size = ', length(s));
+
+  //delete old file if exists
+  SetFileAttributes('gzipped.gz', 0);
+  DeleteFile('gzipped.gz');
+
+  //save new file
+  h := _lcreat('gzipped.gz', OF_WRITE);
+  _lwrite(h, @s[1], length(s));
+  _lclose(h);
+
+  writeln('done');
+end;
+
 begin
   try
-    rundemo;
+    //rundemo1;
+    rundemo2;
   finally
     readln;
   end;

@@ -4,7 +4,7 @@ unit zflate;
 
 interface
 
-uses ZBase, ZInflate, ZDeflate;
+uses ZBase, ZInflate, ZDeflate, crc, adler;
 
 type
   tzflate = record
@@ -64,9 +64,9 @@ function gzuncompress(data: pointer; size: dword; var output: pointer; var outpu
 function gzuncompress(str: string): string;
 
 //compress (GZIP) whole buffer at once
-function gzencode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+function gzencode(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9; filename: string=''; comment: string=''): boolean;
 //compress (GZIP) whole string at once
-function gzencode(str: string): string;
+function gzencode(str: string; level: dword=9; filename: string=''; comment: string=''): string;
 //decompress (GZIP) whole buffer at once
 function gcdecode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 //decompress (GZIP) whole string at once
@@ -340,7 +340,7 @@ end;
 
 // -- GZIP compress -----------------------
 
-function makegzipheader(compressionlevel: integer; filename: string=''): string;
+function makegzipheader(compressionlevel: integer; filename: string=''; comment: string=''): string;
 var
   flags: byte;
   modtime: dword;
@@ -359,31 +359,68 @@ begin
   if compressionlevel = 1 then result[9] := #$04; //best speed
 
   result[10] := #$FF; //file system (00 = FAT?)
+  //result[10] := #$00;
 
   //optional headers
   flags := 0;
 
   //filename
   if filename <> '' then begin
-    flags := flags and $08;
+    writeln('* createing fileame in header');
+    flags := flags or $08;
     result += filename;
     result += #$00;
   end;
 
+  //comment
+  if comment <> '' then begin
+    flags := flags or $10;
+    result += comment;
+    result += #00;
+  end;
+
   result[4] := chr(flags);
+  writeln('flags = ', flags);
 end;
 
 function makegzipfooter(originalsize: dword; crc: dword): string;
 begin
-  //crc32b checksum, then filesize
+  setlength(result, 8);
+  move(crc, result[1], 4);
+  move(originalsize, result[1+4], 4);
 end;
 
-function gzencode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+function gzencode(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9; filename: string=''; comment: string=''): boolean;
+var
+  z: tzflate;
+  header, footer: string;
 begin
+  result := false;
+  if not zdeflateinit(z) then exit;
+  if not zdeflatewrite(z, data, size, true) then exit;
+
+  header := makegzipheader(level, filename, comment);
+  footer := makegzipfooter(size, crc32(0, data, size));
+
+  outputsize := length(header)+z.bytesavailable+length(footer);
+  output := getmem(outputsize);
+
+  move(header[1], output^, length(header));
+  move(z.buffer[0], (output+length(header))^, z.bytesavailable);
+  move(footer[1], (output+length(header)+z.bytesavailable)^, length(footer));
+
+  result := true;
 end;
 
-function gzencode(str: string): string;
+function gzencode(str: string; level: dword=9; filename: string=''; comment: string=''): string;
+var
+  p: pointer;
+  d: dword;
 begin
+  result := '';
+  if not gzencode(@str[1], length(str), p, d, level, filename, comment) then exit;
+  setlength(result, d);
+  move(p^, result[1], d);
 end;
 
 // -- GZIP decompress ---------------------
