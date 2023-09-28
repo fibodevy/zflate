@@ -12,7 +12,8 @@ var
   gzip: tgzipinfo;
 begin
   //get file contents
-  h := _lopen('test.txt.gz', OF_READ);
+  //h := _lopen('test.txt.gz', OF_READ);
+  h := _lopen('gzipped.gz', OF_READ);
   d := GetFileSize(h, nil);
   setlength(s, d);
   _lread(h, @s[1], d);
@@ -98,11 +99,24 @@ begin
   writeln('done');
 end;
 
+procedure rundemo4;
+var
+  s, d: string;
+begin
+  s := 'testing';
+  d := gzencode(s);
+  writeln('encode size = ', length(d));
+  writeln('decode size = ', length(gzdecode(d)));
+  writeln('test result = ', gzdecode(d) = s);
+end;
+
+
 begin
   try
     //rundemo1;
     //rundemo2;
-    rundemo3;
+    //rundemo3;
+    rundemo4;
   finally
     readln;
   end;

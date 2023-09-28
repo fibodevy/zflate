@@ -68,9 +68,9 @@ function gzencode(data: pointer; size: dword; var output: pointer; var outputsiz
 //compress (GZIP) whole string at once
 function gzencode(str: string; level: dword=9; filename: string=''; comment: string=''): string;
 //decompress (GZIP) whole buffer at once
-function gcdecode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+function gzdecode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 //decompress (GZIP) whole string at once
-function gcdecode(str: string): string;
+function gzdecode(str: string): string;
 
 implementation
 
@@ -160,10 +160,10 @@ begin
     result := true;
   end;
 
-  if lastchunk then begin
-    i := deflateEnd(z.z);
-    result := i = Z_OK;
-  end;
+  //if lastchunk then begin
+  //  i := deflateEnd(z.z);
+  //  result := i = Z_OK;
+  //end;
 end;
 
 function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
@@ -406,7 +406,6 @@ begin
   end;
 
   result[4] := chr(flags);
-  writeln('flags = ', flags);
 end;
 
 function makegzipfooter(originalsize: dword; crc: dword): string;
@@ -447,16 +446,41 @@ begin
   if not gzencode(@str[1], length(str), p, d, level, filename, comment) then exit;
   setlength(result, d);
   move(p^, result[1], d);
+  freemem(p);
 end;
 
 // -- GZIP decompress ---------------------
 
-function gcdecode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+function gzdecode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+var
+  gzip: tgzipinfo;
+  z: tzflate;
+  //originalsize: dword;
+  checksum: dword;
 begin
+  result := false;
+  if not zreadgzipheader(data, gzip) then exit;
+  if not zinflateinit(z) then exit;
+  if not zinflatewrite(z, data+gzip.streamat, size-gzip.streamat-8, true) then exit;
+  //originalsize := pdword(data+size-4)^;
+  checksum := pdword(data+size-8)^;
+  if crc32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit; //invalid checsum
+  outputsize := z.bytesavailable;
+  output := getmem(outputsize);
+  move(z.buffer[0], output^, outputsize);
+  result := true;
 end;
 
-function gcdecode(str: string): string;
+function gzdecode(str: string): string;
+var
+  p: pointer;
+  d: dword;
 begin
+  result := '';
+  if not gzdecode(@str[1], length(str), p, d) then exit;
+  setlength(result, d);
+  move(p^, result[1], d);
+  freemem(p);
 end;
 
 end.
