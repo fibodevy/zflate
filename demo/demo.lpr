@@ -115,7 +115,7 @@ var
   s: string;
   streamtype, startsat, trailing: dword;
   size: dword;
-  z: tzflate;
+  p: pchar;
 begin
   writeln('file = ', path);
 
@@ -147,16 +147,12 @@ begin
     size := d;
   end;
 
-  //init zflate
-  if not zinflateinit(z) then begin
-    writeln('could not init zflate');
-    exit;
-  end;
-
-  //decompress deflated stream
-  if zinflatewrite(z, @s[1+startsat], size, true) then begin
-    writeln('decompressed data, size = ', z.bytesavailable);
-    writeln('decompressed contents = "', pchar(@z.buffer[0]), '"');
+  //inflate stream
+  if gzinflate(@s[1+startsat], size, p, d) then begin
+    writeln('decompressed ', d, ' bytes');
+    setlength(s, d);
+    move(p^, s[1], d);
+    writeln('decompressed data = "', s, '"');
   end else begin
     writeln('could NOT decompress data!');
   end;
