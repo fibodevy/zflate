@@ -8,9 +8,9 @@ This unit allows you to easily compress and decompress buffers and strings like 
 ### Compression
 | Function | Format | Status |
 |-|-|-|
-| gzdeflate() | DEFLATE | 32k bytes limit (will be fixed soon) |
-| gzcompress() | ZLIB | 32k bytes limit (will be fixed soon) |
-| gzencode() | GZIP | 32k bytes limit (will be fixed soon) |
+| gzdeflate() | DEFLATE | ✔ |
+| gzcompress() | ZLIB | ✔ |
+| gzencode() | GZIP | ✔ |
 
 ### Decompression
 | Function | Format | Status |
