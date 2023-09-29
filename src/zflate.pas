@@ -27,7 +27,7 @@ unit zflate;
 
 interface
 
-uses ZBase, ZInflate, ZDeflate, crc, adler;
+uses ZBase, ZInflate, ZDeflate, adler;
 
 type
   tzflate = record
@@ -106,6 +106,9 @@ function gzencode(str: string; level: dword=9; filename: string=''; comment: str
 function gzdecode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 //decompress whole GZIP string at once
 function gzdecode(str: string): string;
+
+//compute crc32b checksum
+function crc32b(crc: dword; buf: pbyte; len: dword): dword;
 
 threadvar
   zlasterror: string;
@@ -515,7 +518,7 @@ begin
   if not zdeflatewrite(z, data, size, true) then exit(zerror(z, 'invalid gzip header'));
 
   header := makegzipheader(level, filename, comment);
-  footer := makegzipfooter(size, crc32(0, data, size));
+  footer := makegzipfooter(size, crc32b(0, data, size));
 
   outputsize := length(header)+z.bytesavailable+length(footer);
   output := getmem(outputsize);
@@ -555,7 +558,7 @@ begin
   originalsize := pdword(data+size-4)^;
   if originalsize <> z.bytesavailable then exit(zerror(z, 'output size doesnt match original file size'));
   checksum := pdword(data+size-8)^;
-  if crc32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit(zerror(z, 'invalid checksum'));
+  if crc32b(0, @z.buffer[0], z.bytesavailable) <> checksum then exit(zerror(z, 'invalid checksum'));
   outputsize := z.bytesavailable;
   output := getmem(outputsize);
   move(z.buffer[0], output^, outputsize);
@@ -572,6 +575,53 @@ begin
   setlength(result, d);
   move(p^, result[1], d);
   freemem(p);
+end;
+
+// -- crc32b ------------------------------
+
+function crc32b(crc: dword; buf: pbyte; len: dword): dword;
+const
+  crc32_table_empty: boolean = true;
+var
+  crc32_table: array[byte] of dword;
+procedure make_crc32_table;
+var
+  d: dword;
+  n, k: integer;
+begin
+  for n := 0 to 255 do begin
+    d := cardinal(n);
+    for k := 0 to 7 do begin
+      if (d and 1) <> 0 then
+        d := (d shr 1) xor uint32($edb88320)
+      else
+        d := (d shr 1);
+    end;
+    crc32_table[n] := d;
+  end;
+  crc32_table_empty := false;
+end;
+begin
+  if buf = nil then exit(0);
+  if crc32_table_empty then make_crc32_table;
+
+  crc := crc xor $ffffffff;
+  while (len >= 4) do begin
+    crc := crc32_table[(crc xor buf[0]) and $ff] xor (crc shr 8);
+    crc := crc32_table[(crc xor buf[1]) and $ff] xor (crc shr 8);
+    crc := crc32_table[(crc xor buf[2]) and $ff] xor (crc shr 8);
+    crc := crc32_table[(crc xor buf[3]) and $ff] xor (crc shr 8);
+    inc(buf, 4);
+    dec(len, 4);
+  end;
+
+  while (len > 0) do begin
+    crc := crc32_table[(crc xor buf^) and $ff] xor (crc shr 8);
+    inc(buf);
+    dec(len);
+  end;
+
+  result := crc xor $ffffffff;
 end;
 
 end.
