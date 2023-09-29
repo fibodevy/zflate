@@ -128,6 +128,11 @@ function gzdecode(data: pointer; size: dword; var output: pointer; var outputsiz
 //decompress whole GZIP string at once
 function gzdecode(str: string): string;
 
+//try to detect buffer format and decompress it at once
+function zdecompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+//try to detect string format and decompress it at once
+function zdecompress(str: string): string;
+
 //transalte error code to message
 function zflatetranslatecode(code: integer): string;
 
@@ -594,6 +599,38 @@ var
 begin
   result := '';
   if not gzdecode(@str[1], length(str), p, d) then exit;
+  setlength(result, d);
+  move(p^, result[1], d);
+  freemem(p);
+end;
+
+// -- decompress anything -----------------
+
+function zdecompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+var
+  streamsize, startsat, streamtype: dword;
+begin
+  result := false;
+
+  if not zfindstream(data, size, streamtype, startsat, streamsize) then begin
+    //stream not found, assume its pure deflate
+    streamtype := 0;
+    startsat := 0;    
+    streamsize := size;
+  end;
+
+  if not gzinflate(data+startsat, streamsize, output, outputsize) then exit;
+
+  result := true;
+end;
+
+function zdecompress(str: string): string;
+var
+  p: pointer;
+  d: dword;
+begin
+  result := '';
+  if not zdecompress(@str[1], length(str), p, d) then exit;
   setlength(result, d);
   move(p^, result[1], d);
   freemem(p);
