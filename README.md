@@ -1,20 +1,26 @@
 # zflate
 
-The goal is to make these compression functions work exactly like in PHP
+This unit allows you to easily compress and decompress buffers and strings like in PHP. Main goal of this unit is to be as small as possible.
 
+- compiled demo is ~80 kB in size
+- adding unit to uses section increases binary size by ~45 kB, even less if you already use zlib units for other things
+
+### Compression
 | Function | Format | Status |
 |-|-|-|
-| gzdeflate() |  pure deflate | ✔ |
-| gzcompress() |  ZLIB | ✔ |
+| gzdeflate() | deflate | ✔ |
+| gzcompress() | ZLIB | ✔ |
 | gzencode() |  GZIP | ✔ |
 
-And decompression
+### Decompression
 | Function | Format | Status |
 |-|-|-|
-| gzinflate() |  pure deflate | ✔ |
-| gzuncompress() |  ZLIB | ✔ |
+| gzinflate() | deflate | ✔ |
+| gzuncompress() | ZLIB | ✔ |
 | gzdecode() |  GZIP | ✔ |
 
-Also leaving possiblity to read big files by chunks easily
-
-Unit must be as small as possible (compiled demo is less than 60 kB in size)
+## Usage
+```pascal
+compressed := gzencode('any string');
+decompressed := gzdecode(compressed);
+```
