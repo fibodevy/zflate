@@ -132,7 +132,7 @@ begin
 
   writeln('got ', length(s), ' bytes of compressed data');
 
-  //if you call zstreambasicinfo make sure you have at least 10 bytes od data available!
+  //if you call zstreambasicinfo make sure you have at least 10 bytes of data available!
   //get info about stream
   if (length(s) > 10) and zstreambasicinfo(@s[1], streamtype, startsat, trailing) then begin
     writeln('detected stream type ', streamtype);
@@ -180,12 +180,36 @@ begin
   writeln('done demo 4');
 end;
 
+function file_get_contents(path: string): string;
+var
+  h: hwnd;
+  d: dword;
+begin
+  result := '';
+  h := _lopen(pchar(path), OF_READ);
+  if h = 0 then exit;
+  d := GetFileSize(h, nil);
+  setlength(result, d);
+  _lread(h, @result[1], d);
+  _lclose(h);
+end;
+
+procedure demo5;
+begin
+  writeln('decompress 1 = ', zdecompress(file_get_contents('php_gzdeflate')));
+  writeln('decompress 2 = ', zdecompress(file_get_contents('php_gzcompress')));
+  writeln('decompress 3 = ', zdecompress(file_get_contents('php_gzencode')));
+  writeln;
+  writeln('done demo 5');
+end;
+
 begin
   try
     demo1; writeln;
     demo2; writeln;
     demo3; writeln;
     demo4; writeln;
+    demo5; writeln;
   finally
     readln;
   end;
