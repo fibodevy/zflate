@@ -656,7 +656,7 @@ begin
     d1 := d1 mod base;
     d2 := d2 mod base;
   end;
-  adler32 := (d2 shl 16) or d1;
+  result := (d2 shl 16) or d1;
 end;
 
 end.
