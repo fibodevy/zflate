@@ -109,7 +109,7 @@ function gzinflate(str: string): string;
 //make ZLIB header
 function makezlibheader(compressionlevel: integer): string;
 //make ZLIB footer
-function makezlibfooter(adler32: dword): string;
+function makezlibfooter(adler: dword): string;
 //compress whole buffer to ZLIB at once
 function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
 //compress whole string to ZLIB at once
@@ -468,10 +468,11 @@ begin
   end;
 end;
 
-function makezlibfooter(adler32: dword): string;
+function makezlibfooter(adler: dword): string;
 begin
   setlength(result, 4);
-  move(adler32, result[1], 4);
+  adler := swapendian(adler);
+  move(adler, result[1], 4);
 end;
 
 function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
@@ -483,7 +484,7 @@ begin
   result := false;
 
   header := makezlibheader(level);
-  footer := makezlibfooter(swapendian(adler32(adler32(0, nil, 0), data, size)));
+  footer := makezlibfooter(adler32(adler32(0, nil, 0), data, size));
 
   if not gzdeflate(data, size, deflated, deflatedsize, level) then exit;
 
@@ -527,7 +528,7 @@ begin
   size -= zlib.streamat+zlib.footerlen;
   if not gzinflate(data, size, output, outputsize) then exit;
 
-  if adler32(adler32(0, nil, 0), output, outputsize) <> swapendian(checksum) then exit(zerror(z, ZFLATE_ECHECKSUM));
+  if swapendian(adler32(adler32(0, nil, 0), output, outputsize)) <> checksum then exit(zerror(z, ZFLATE_ECHECKSUM));
 
   result := true;
 end;
