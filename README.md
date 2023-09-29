@@ -12,7 +12,7 @@ And decompression
 | Function | Format | Status |
 |-|-|-|
 | gzinflate() |  pure deflate | ✔ |
-| gzuncompress() |  ZLIB | ✘ |
+| gzuncompress() |  ZLIB | ✔ |
 | gzdecode() |  GZIP | ✔ |
 
 Also leaving possiblity to read big files by chunks easily

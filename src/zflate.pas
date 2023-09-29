@@ -131,7 +131,6 @@ var
 begin
   result := false;
 
-  //try
   if size > 1024*32 then exit(zerror(z, 'max single chunk size is 32k'));
 
   z.z.next_in := data;
@@ -158,12 +157,6 @@ begin
     i := deflateEnd(z.z);
     result := i = Z_OK;
   end;
-
-  //todo: check if this is how it should be done
-
-  //finally
-  //  if not result then deflateEnd(z.z);
-  //end;
 end;
 
 // -- inflate chunks ----------------------
@@ -425,13 +418,33 @@ end;
 // -- ZLIB decompress ---------------------
 
 function gzuncompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
-begin   
-  //TODO
+var
+  zlib: tzlibinfo;
+  z: tzflate;
+  checksum: dword;
+begin
+  result := false;
+  if not zreadzlibheader(data, zlib) then exit;
+  if not zinflateinit(z) then exit;
+  if not zinflatewrite(z, data+zlib.streamat, size-zlib.streamat-zlib.footerlen, true) then exit;
+  checksum := pdword(data+size-4)^;
+  if adler32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit; //invalid checsum
+  outputsize := z.bytesavailable;
+  output := getmem(outputsize);
+  move(z.buffer[0], output^, outputsize);
+  result := true;
 end;
 
 function gzuncompress(str: string): string;
+var
+  p: pointer;
+  d: dword;
 begin
-  //TODO
+  result := '';
+  if not gzuncompress(@str[1], length(str), p, d) then exit;
+  setlength(result, d);
+  move(p^, result[1], d);
+  freemem(p);
 end;
 
 // -- GZIP compress -----------------------
@@ -530,11 +543,11 @@ begin
   result := false;
   if not zreadgzipheader(data, gzip) then exit;
   if not zinflateinit(z) then exit;
-  if not zinflatewrite(z, data+gzip.streamat, size-gzip.streamat-8, true) then exit;
+  if not zinflatewrite(z, data+gzip.streamat, size-gzip.streamat-gzip.footerlen, true) then exit;
   originalsize := pdword(data+size-4)^;
   if originalsize <> z.bytesavailable then exit; //invalid size
   checksum := pdword(data+size-8)^;
-  if crc32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit; //invalid checsum
+  if crc32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit; //invalid checksum
   outputsize := z.bytesavailable;
   output := getmem(outputsize);
   move(z.buffer[0], output^, outputsize);
