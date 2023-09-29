@@ -2,7 +2,8 @@ program demo;
 
 uses Windows, zflate;
 
-procedure rundemo1;
+//detect compression type (ZLIB/GZIP) and decompress the file
+procedure demo1;
 var
   s: string;
   h: hwnd;
@@ -12,8 +13,11 @@ var
   gzip: tgzipinfo;
 begin
   //get file contents
-  //h := _lopen('test.txt.gz', OF_READ);
-  h := _lopen('gzipped.gz', OF_READ);
+  h := _lopen('test.txt.gz', OF_READ);
+  if h = 0 then begin
+    writeln('cant open file');
+    exit;
+  end;
   d := GetFileSize(h, nil);
   setlength(s, d);
   _lread(h, @s[1], d);
@@ -49,16 +53,18 @@ begin
   end else begin
     writeln('no stream found, it may be pure deflated data');
   end;
+
+  writeln('done demo 1');
 end;
 
-//GZIP compression
-procedure rundemo2;
+//GZIP compress string and save it to file
+procedure demo2;
 var
   h: hwnd;
   s: string;
 begin
   //create gzipped file
-  s := 'contents of gzipped file';
+  s := 'gzip compressed content';
 
   s := gzencode(s, 9, 'some file name.txt', 'some comment');
   writeln('compressed size = ', length(s));
@@ -71,18 +77,19 @@ begin
   h := _lcreat('gzipped.gz', OF_WRITE);
   _lwrite(h, @s[1], length(s));
   _lclose(h);
+  writeln('saves as gzipped.gz');
 
-  writeln('done');
+  writeln('done demo 2');
 end;
 
-//ZLIB compression
-procedure rundemo3;
+//ZLIB compress string and save it to file
+procedure demo3;
 var
   h: hwnd;
   s: string;
 begin
   //create gzipped file
-  s := 'zlib compressed contents';
+  s := 'zlib compressed content';
 
   s := gzcompress(s);
   writeln('compressed size = ', length(s));
@@ -95,27 +102,16 @@ begin
   h := _lcreat('compressed.zlib', OF_WRITE);
   _lwrite(h, @s[1], length(s));
   _lclose(h);
+  writeln('saved as compressed.zlib');
 
-  writeln('done');
-end;
-
-procedure rundemo4;
-var
-  s, d: string;
-begin
-  s := 'testing';
-  d := gzencode(s);
-  writeln('encode size = ', length(d));
-  writeln('decode size = ', length(gzdecode(d)));
-  writeln('test result = ', gzdecode(d) = s);
+  writeln('done demo 3');
 end;
 
 begin
   try
-    rundemo1;
-    //rundemo2;
-    //rundemo3;
-    //rundemo4;
+    demo1; writeln;
+    demo2; writeln;
+    demo3; writeln;
   finally
     readln;
   end;
