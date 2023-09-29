@@ -24,6 +24,7 @@ begin
   _lclose(h);
 
   writeln('input size = ', length(s));
+  if length(s) = 0 then exit;
 
   //find stream type
   if zfindstream(@s[1], length(s), type_, start, size) then begin
@@ -77,7 +78,7 @@ begin
   h := _lcreat('gzipped.gz', OF_WRITE);
   _lwrite(h, @s[1], length(s));
   _lclose(h);
-  writeln('saves as gzipped.gz');
+  writeln('saved as gzipped.gz');
 
   writeln('done demo 2');
 end;
@@ -107,7 +108,7 @@ begin
   writeln('done demo 3');
 end;
 
-procedure decompess_file(path: string);
+procedure decompressfile(path: string);
 var
   h: hwnd;
   d: dword;
@@ -131,8 +132,9 @@ begin
 
   writeln('got ', length(s), ' bytes of compressed data');
 
+  //if you call zstreambasicinfo make sure you have at least 10 bytes od data available!
   //get info about stream
-  if zstreambasicinfo(@s[1], streamtype, startsat, trailing) then begin
+  if (length(s) > 10) and zstreambasicinfo(@s[1], streamtype, startsat, trailing) then begin
     writeln('detected stream type ', streamtype);
     writeln('streams starts at ', startsat);
     writeln('stream trailing bytes is ', trailing);
@@ -164,19 +166,19 @@ procedure demo4;
 var
   s: string;
 begin
-  s := 'php_gzdeflate';   
+  s := 'php_gzdeflate';
   writeln('attempting to decompress "', s, '" file');
-  decompess_file(s);
+  decompressfile(s);
   writeln;
 
   s := 'php_gzcompress';
   writeln('attempting to decompress "', s, '" file');
-  decompess_file(s);
+  decompressfile(s);
   writeln;
 
   s := 'php_gzencode';
   writeln('attempting to decompress "', s, '" file');
-  decompess_file(s);
+  decompressfile(s);
   writeln;
 
   writeln('done demo 4');
