@@ -93,9 +93,9 @@ function zstreambasicinfo(data: pointer; var streamtype: dword; var startsat: dw
 //find out where deflate stream starts and what is its size
 function zfindstream(data: pointer; size: dword; var streamtype: dword; var startsat: dword; var streamsize: dword): boolean;
 
-//compress whole DEFLATE buffer at once
+//compress whole buffer to DEFLATE at once
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
-//compress whole DEFLATE string at once
+//compress whole string to DEFLATE at once
 function gzdeflate(str: string; level: dword=9): string;
 //decompress whole DEFLATE buffer at once
 function gzinflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
@@ -105,10 +105,10 @@ function gzinflate(str: string): string;
 //make ZLIB header
 function makezlibheader(compressionlevel: integer): string;
 //make ZLIB footer
-function makezlibfooter(adler: dword): string;
-//compress whole ZLIB buffer at once
+function makezlibfooter(adler32: dword): string;
+//compress whole buffer to ZLIB at once
 function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
-//compress whole ZLIB string at once
+//compress whole string to ZLIB at once
 function gzcompress(str: string; level: dword=9): string;
 //dempress whole ZLIB buffer at once
 function gzuncompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
@@ -118,10 +118,10 @@ function gzuncompress(str: string): string;
 //make GZIP header
 function makegzipheader(compressionlevel: integer; filename: string=''; comment: string=''): string;
 //make GZIP footer
-function makegzipfooter(originalsize: dword; crc: dword): string;
-//compress whole GZIP buffer at once
+function makegzipfooter(originalsize: dword; crc32b: dword): string;
+//compress whole buffer to GZIP at once
 function gzencode(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9; filename: string=''; comment: string=''): boolean;
-//compress whole GZIP string at once
+//compress whole string to GZIP at once
 function gzencode(str: string; level: dword=9; filename: string=''; comment: string=''): string;
 //decompress whole GZIP buffer at once
 function gzdecode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
@@ -409,10 +409,10 @@ begin
   end;
 end;
 
-function makezlibfooter(adler: dword): string;
+function makezlibfooter(adler32: dword): string;
 begin
   setlength(result, 4);
-  move(adler, result[1], 4);
+  move(adler32, result[1], 4);
 end;
 
 function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
@@ -523,10 +523,10 @@ begin
   result[4] := chr(flags);
 end;
 
-function makegzipfooter(originalsize: dword; crc: dword): string;
+function makegzipfooter(originalsize: dword; crc32b: dword): string;
 begin
   setlength(result, 8);
-  move(crc, result[1], 4);
+  move(crc32b, result[1], 4);
   move(originalsize, result[1+4], 4);
 end;
 
