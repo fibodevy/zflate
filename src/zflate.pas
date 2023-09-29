@@ -61,7 +61,7 @@ const
 
   ZFLATE_OK           = 0;
   ZFLATE_ECHUNKTOOBIG = 101; //'max single chunk size is 32k'
-  ZFLATE_EBUFFER      = 102; //'buffer error'
+  ZFLATE_EBUFFER      = 102; //'buffer too small'
   ZFLATE_ESTREAM      = 103; //'stream error'
   ZFLATE_EDATA        = 104; //'data error'
   ZFLATE_EDEFLATE     = 105; //'deflate error'
@@ -73,15 +73,19 @@ const
   ZFLATE_ECHECKSUM    = 112; //'invalid checksum'
   ZFLATE_EOUTPUTSIZE  = 113; //'output size doesnt match original file size'
 
+var
+  zchunkmaxsize: dword = 1024*128; //128 KB max chunk size
+  zbuffersize: dword = 1024*1024*4; //4 MB default buffer size
+
 threadvar
   zlasterror: integer;
 
 //deflate chunks
-function zdeflateinit(var z: tzflate; level: dword=9; buffersize: dword=1024*512): boolean;
+function zdeflateinit(var z: tzflate; level: dword=9; buffersize: dword=0): boolean;
 function zdeflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 
 //inflate chunks
-function zinflateinit(var z: tzflate; buffersize: dword=1024*512): boolean;
+function zinflateinit(var z: tzflate; buffersize: dword=0): boolean;
 function zinflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 
 //read zlib header
@@ -152,9 +156,10 @@ end;
 
 // -- deflate chunks ----------------------
 
-function zdeflateinit(var z: tzflate; level: dword=9; buffersize: dword=1024*512): boolean;
+function zdeflateinit(var z: tzflate; level: dword=9; buffersize: dword=0): boolean;
 begin
-  result := false;       
+  result := false;
+  if buffersize = 0 then buffersize := zbuffersize;
   zlasterror := 0;
   fillchar(z, sizeof(z), 0);
   setlength(z.buffer, buffersize);
@@ -168,7 +173,7 @@ var
 begin
   result := false;
 
-  if size > length(z.buffer) then exit(zerror(z, ZFLATE_ECHUNKTOOBIG));
+  if size > zchunkmaxsize then exit(zerror(z, ZFLATE_ECHUNKTOOBIG));
 
   z.z.next_in := data;
   z.z.avail_in := size;
@@ -180,7 +185,7 @@ begin
   else
     i := deflate(z.z, Z_NO_FLUSH);
 
-  if i = Z_BUF_ERROR then exit(zerror(z, ZFLATE_EBUFFER));
+  if i = Z_BUF_ERROR then exit(zerror(z, ZFLATE_EBUFFER)); //buffer too small
   if i = Z_STREAM_ERROR then exit(zerror(z, ZFLATE_ESTREAM));
   if i = Z_DATA_ERROR then exit(zerror(z, ZFLATE_EDATA));
 
@@ -188,9 +193,8 @@ begin
     z.bytesavailable := z.z.total_out-z.totalout;
     z.totalout += z.bytesavailable;
     result := true;
-  end else begin
+  end else
     exit(zerror(z, ZFLATE_EDEFLATE));
-  end;
 
   if lastchunk then begin
     i := deflateEnd(z.z);
@@ -200,9 +204,10 @@ end;
 
 // -- inflate chunks ----------------------
 
-function zinflateinit(var z: tzflate; buffersize: dword=1024*512): boolean;
+function zinflateinit(var z: tzflate; buffersize: dword=0): boolean;
 begin
-  result := false;
+  result := false;   
+  if buffersize = 0 then buffersize := zbuffersize;
   zlasterror := 0;
   fillchar(z, sizeof(z), 0);
   setlength(z.buffer, buffersize);
@@ -216,6 +221,8 @@ var
 begin
   result := false;
 
+  if size > zchunkmaxsize then exit(zerror(z, ZFLATE_ECHUNKTOOBIG));
+
   z.z.next_in := data;
   z.z.avail_in := size;
   z.z.next_out := @z.buffer[0];
@@ -224,15 +231,9 @@ begin
   if lastchunk then
     i := inflate(z.z, Z_FINISH)
   else
-    //i := inflate(z.z, Z_SYNC_FLUSH);
     i := inflate(z.z, Z_NO_FLUSH);
 
-  if i = Z_BUF_ERROR then begin
-    //buffer too small
-    inflateEnd(z.z);
-    exit(zerror(z, ZFLATE_EBUFFER));
-  end;
-
+  if i = Z_BUF_ERROR then exit(zerror(z, ZFLATE_EBUFFER)); //buffer too small
   if i = Z_STREAM_ERROR then exit(zerror(z, ZFLATE_ESTREAM));
   if i = Z_DATA_ERROR then exit(zerror(z, ZFLATE_EDATA));
 
@@ -240,7 +241,6 @@ begin
     z.bytesavailable := z.z.total_out-z.totalout;
     z.totalout += z.bytesavailable;
     result := true;
-    //if lastchunk then result := deflateEnd(z.z) = Z_OK;
   end else
     exit(zerror(z, ZFLATE_EINFLATE));
 
@@ -350,8 +350,6 @@ end;
 // -- deflate -----------------------------
 
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
-const
-  maxchunksize = 1024*32;
 var
   z: tzflate;
   p, chunksize: dword;
@@ -366,9 +364,9 @@ begin
   //compress
   while size > 0 do begin
     chunksize := size;
-    if chunksize > maxchunksize then chunksize := maxchunksize;
+    if chunksize > zchunkmaxsize then chunksize := zchunkmaxsize;
     //deflate
-    if not zdeflatewrite(z, data, chunksize, chunksize<maxchunksize) then exit; //might be ZFLATE_EBUFFER = buffer too small
+    if not zdeflatewrite(z, data, chunksize, chunksize<zchunkmaxsize) then exit; //might be ZFLATE_EBUFFER = buffer too small
     //alloc mem for output
     if output = nil then output := getmem(z.bytesavailable)
     else output := reallocmem(output, outputsize+z.bytesavailable);
@@ -402,8 +400,6 @@ end;
 // -- inflate -----------------------------
 
 function gzinflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
-const
-  maxchunksize = 1024*32;
 var
   z: tzflate;
   p, chunksize: dword;
@@ -418,9 +414,9 @@ begin
   //decompress
   while size > 0 do begin
     chunksize := size;
-    if chunksize > maxchunksize then chunksize := maxchunksize;
+    if chunksize > zchunkmaxsize then chunksize := zchunkmaxsize;
     //inflate
-    if not zinflatewrite(z, data, chunksize, chunksize<maxchunksize) then exit; //might be ZFLATE_EBUFFER = buffer too small
+    if not zinflatewrite(z, data, chunksize, chunksize<zchunkmaxsize) then exit; //might be ZFLATE_EBUFFER = buffer too small
     //alloc mem for output
     if output = nil then output := getmem(z.bytesavailable)
     else output := reallocmem(output, outputsize+z.bytesavailable);
@@ -480,22 +476,25 @@ end;
 
 function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
 var
-  z: tzflate;
-  header, footer: string;
+  header, footer: string;  
+  deflated: pointer;
+  deflatedsize: dword;
 begin
   result := false;
-  if not zdeflateinit(z) then exit(zerror(z, ZFLATE_EDEFLATEINIT));
-  if not zdeflatewrite(z, data, size, true) then exit(zerror(z, ZFLATE_EDEFLATE));
 
   header := makezlibheader(level);
-  footer := makezlibfooter(adler32(0, data, size));
+  footer := makezlibfooter(swapendian(adler32(adler32(0, nil, 0), data, size)));
 
-  outputsize := length(header)+z.bytesavailable+length(footer);
+  if not gzdeflate(data, size, deflated, deflatedsize, level) then exit;
+
+  outputsize := length(header)+deflatedsize+length(footer);
   output := getmem(outputsize);
 
   move(header[1], output^, length(header));
-  move(z.buffer[0], (output+length(header))^, z.bytesavailable);
-  move(footer[1], (output+length(header)+z.bytesavailable)^, length(footer));
+  move(deflated^, (output+length(header))^, deflatedsize);
+  move(footer[1], (output+length(header)+deflatedsize)^, length(footer));
+
+  freemem(deflated);
 
   result := true;
 end;
@@ -597,7 +596,6 @@ end;
 
 function gzencode(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9; filename: string=''; comment: string=''): boolean;
 var
-  z: tzflate;
   header, footer: string;
   deflated: pointer;
   deflatedsize: dword;
@@ -709,9 +707,11 @@ begin
   result := 'unknown';
 
   case code of
+    ZFLATE_ZLIB        : result := 'ZLIB';
+    ZFLATE_GZIP        : result := 'GZIP';
     ZFLATE_OK          : result := 'ok';
     ZFLATE_ECHUNKTOOBIG: result := 'max single chunk size is 32k';
-    ZFLATE_EBUFFER     : result := 'buffer error';
+    ZFLATE_EBUFFER     : result := 'buffer too small';
     ZFLATE_ESTREAM     : result := 'stream error';
     ZFLATE_EDATA       : result := 'data error';
     ZFLATE_EDEFLATE    : result := 'deflate error';
