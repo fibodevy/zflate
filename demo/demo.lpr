@@ -34,7 +34,7 @@ begin
     writeln('size  = ', size);
     writeln;
 
-    if type_ = ZSTREAM_GZIP then begin
+    if type_ = ZFLATE_GZIP then begin
       writeln('stream is GZIP, reading header...');
 
       if zreadgzipheader(@s[1], gzip) then begin

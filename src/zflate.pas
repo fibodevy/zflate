@@ -52,8 +52,8 @@ type
   end;
 
 const
-  ZSTREAM_ZLIB = 1;
-  ZSTREAM_GZIP = 2;
+  ZFLATE_ZLIB = 1;
+  ZFLATE_GZIP = 2;
 
 //deflate chunks
 function zdeflateinit(var z: tzflate; level: dword=9): boolean;
@@ -285,14 +285,14 @@ begin
   streamtype := 0;
 
   if (size > 2) and zreadzlibheader(data, zlib) then begin
-    streamtype := ZSTREAM_ZLIB;
+    streamtype := ZFLATE_ZLIB;
     startsat := zlib.streamat;
     streamsize := size-startsat-zlib.footerlen; //footer: adler32
     exit(true);
   end;
 
   if (size > 10) and zreadgzipheader(data, gzip) then begin
-    streamtype := ZSTREAM_GZIP;
+    streamtype := ZFLATE_GZIP;
     startsat := gzip.streamat;
     streamsize := size-startsat-gzip.footerlen; //footer: crc32 + original file size
     exit(true);
@@ -308,14 +308,14 @@ begin
   streamtype := 0;
 
   if zreadzlibheader(data, zlib) then begin
-    streamtype := ZSTREAM_ZLIB;
+    streamtype := ZFLATE_ZLIB;
     startsat := zlib.streamat;
     trailing := 4; //footer: adler32
     exit(true);
   end;
 
   if zreadgzipheader(data, gzip) then begin
-    streamtype := ZSTREAM_GZIP;
+    streamtype := ZFLATE_GZIP;
     startsat := gzip.streamat;
     trailing := 8; //footer: crc32 + original file size
     exit(true);
