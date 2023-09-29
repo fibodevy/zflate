@@ -77,7 +77,7 @@ threadvar
   zlasterror: integer;
 
 //deflate chunks
-function zdeflateinit(var z: tzflate; level: dword=9): boolean;
+function zdeflateinit(var z: tzflate; level: dword=9; buffersize: dword=1024*512): boolean;
 function zdeflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 
 //inflate chunks
@@ -152,12 +152,12 @@ end;
 
 // -- deflate chunks ----------------------
 
-function zdeflateinit(var z: tzflate; level: dword=9): boolean;
+function zdeflateinit(var z: tzflate; level: dword=9; buffersize: dword=1024*512): boolean;
 begin
   result := false;       
   zlasterror := 0;
   fillchar(z, sizeof(z), 0);
-  setlength(z.buffer, 1024*32);
+  setlength(z.buffer, buffersize);
   if deflateInit2(z.z, level, Z_DEFLATED, -MAX_WBITS, DEF_MEM_LEVEL, 0) <> Z_OK then exit;
   result := true;
 end;
@@ -168,7 +168,7 @@ var
 begin
   result := false;
 
-  if size > sizeof(z.buffer) then exit(zerror(z, ZFLATE_ECHUNKTOOBIG));
+  if size > length(z.buffer) then exit(zerror(z, ZFLATE_ECHUNKTOOBIG));
 
   z.z.next_in := data;
   z.z.avail_in := size;
@@ -350,16 +350,40 @@ end;
 // -- deflate -----------------------------
 
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
+const
+  maxchunksize = 1024*32;
 var
   z: tzflate;
+  p, chunksize: dword;
 begin
   result := false;
-  if not zdeflateinit(z, level) then exit(zerror(z, ZFLATE_EDEFLATEINIT));
-  //TODO: compressing streams larger than 32k
-  if not zdeflatewrite(z, data, size, true) then exit;
-  output := getmem(z.bytesavailable);
-  move(z.buffer[0], output^, z.bytesavailable);
-  outputsize := z.bytesavailable;
+  if not zdeflateinit(z) then exit(zerror(z, ZFLATE_EINFLATEINIT));
+
+  output := nil;
+  outputsize := 0;
+  p := 0;
+
+  //compress
+  while size > 0 do begin
+    chunksize := size;
+    if chunksize > maxchunksize then chunksize := maxchunksize;
+    //deflate
+    if not zdeflatewrite(z, data, chunksize, chunksize<maxchunksize) then exit; //might be ZFLATE_EBUFFER = buffer too small
+    //alloc mem for output
+    if output = nil then output := getmem(z.bytesavailable)
+    else output := reallocmem(output, outputsize+z.bytesavailable);
+    //move buffer to output
+    move(z.buffer[0], (output+p)^, z.bytesavailable);
+    //move output position
+    inc(p, z.bytesavailable);
+    //increase output size
+    outputsize += z.bytesavailable;
+    //move data pointer
+    data += chunksize;
+    //how much data left
+    size -= chunksize;
+  end;
+
   result := true;
 end;
 
@@ -395,7 +419,7 @@ begin
   while size > 0 do begin
     chunksize := size;
     if chunksize > maxchunksize then chunksize := maxchunksize;
-    //decompress
+    //inflate
     if not zinflatewrite(z, data, chunksize, chunksize<maxchunksize) then exit; //might be ZFLATE_EBUFFER = buffer too small
     //alloc mem for output
     if output = nil then output := getmem(z.bytesavailable)
@@ -575,20 +599,24 @@ function gzencode(data: pointer; size: dword; var output: pointer; var outputsiz
 var
   z: tzflate;
   header, footer: string;
+  deflated: pointer;
+  deflatedsize: dword;
 begin
   result := false;
-  if not zdeflateinit(z) then exit(zerror(z, ZFLATE_EDEFLATEINIT));
-  if not zdeflatewrite(z, data, size, true) then exit(zerror(z, ZFLATE_EDEFLATE));
 
   header := makegzipheader(level, filename, comment);
   footer := makegzipfooter(size, crc32b(0, data, size));
 
-  outputsize := length(header)+z.bytesavailable+length(footer);
+  if not gzdeflate(data, size, deflated, deflatedsize, level) then exit;
+
+  outputsize := length(header)+deflatedsize+length(footer);
   output := getmem(outputsize);
 
   move(header[1], output^, length(header));
-  move(z.buffer[0], (output+length(header))^, z.bytesavailable);
-  move(footer[1], (output+length(header)+z.bytesavailable)^, length(footer));
+  move(deflated^, (output+length(header))^, deflatedsize);
+  move(footer[1], (output+length(header)+deflatedsize)^, length(footer));
+
+  freemem(deflated);
 
   result := true;
 end;
