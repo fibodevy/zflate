@@ -8,14 +8,14 @@ This unit allows you to easily compress and decompress buffers and strings like 
 ### Compression
 | Function | Format | Status |
 |-|-|-|
-| gzdeflate() | deflate | ✔ |
+| gzdeflate() | DEFLATE | ✔ |
 | gzcompress() | ZLIB | ✔ |
 | gzencode() |  GZIP | ✔ |
 
 ### Decompression
 | Function | Format | Status |
 |-|-|-|
-| gzinflate() | deflate | ✔ |
+| gzinflate() | DEFLATE | ✔ |
 | gzuncompress() | ZLIB | ✔ |
 | gzdecode() |  GZIP | ✔ |
 
