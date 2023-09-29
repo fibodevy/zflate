@@ -60,7 +60,7 @@ const
   ZFLATE_GZIP = 2;
 
   ZFLATE_OK           = 0;
-  ZFLATE_ECHUNKTOOBIG = 101; //'max single chunk size is 32k'
+  ZFLATE_ECHUNKTOOBIG = 101; //'chunk is too big'
   ZFLATE_EBUFFER      = 102; //'buffer too small'
   ZFLATE_ESTREAM      = 103; //'stream error'
   ZFLATE_EDATA        = 104; //'data error'
@@ -711,7 +711,7 @@ begin
     ZFLATE_ZLIB        : result := 'ZLIB';
     ZFLATE_GZIP        : result := 'GZIP';
     ZFLATE_OK          : result := 'ok';
-    ZFLATE_ECHUNKTOOBIG: result := 'max single chunk size is 32k';
+    ZFLATE_ECHUNKTOOBIG: result := 'chunk is too big';
     ZFLATE_EBUFFER     : result := 'buffer too small';
     ZFLATE_ESTREAM     : result := 'stream error';
     ZFLATE_EDATA       : result := 'data error';
