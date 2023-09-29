@@ -10,17 +10,25 @@ This unit allows you to easily compress and decompress buffers and strings like 
 |-|-|-|
 | gzdeflate() | DEFLATE | ✔ |
 | gzcompress() | ZLIB | ✔ |
-| gzencode() |  GZIP | ✔ |
+| gzencode() | GZIP | ✔ |
 
 ### Decompression
 | Function | Format | Status |
 |-|-|-|
 | gzinflate() | DEFLATE | ✔ |
 | gzuncompress() | ZLIB | ✔ |
-| gzdecode() |  GZIP | ✔ |
+| gzdecode() | GZIP | ✔ |
+| zdecompress() | ANY | ✔ |
 
 ## Usage
 ```pascal
-compressed := gzencode('any string');
+compressed := gzencode('some string');
 decompressed := gzdecode(compressed);
+```
+
+Use `zdecompress()` to auto detect stream type and decompress:
+
+```pascal
+compressed := gzencode('some string');
+decompressed := zdecompress(compressed);
 ```
