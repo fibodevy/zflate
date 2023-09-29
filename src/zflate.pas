@@ -25,6 +25,10 @@ unit zflate;
 
 {$mode ObjFPC}{$H+}
 
+//comment out to disable error translation
+//if disabled, zflatetranslatecode will return error code as string
+{$define zflate_error_translation}
+
 interface
 
 uses ZBase, ZInflate, ZDeflate;
@@ -35,7 +39,7 @@ type
     totalout: qword;
     bytesavailable: dword;
     buffer: array[0..1024*32-1] of byte;
-    error: string;
+    error: integer;
   end;
 
   tzlibinfo = record
@@ -54,6 +58,23 @@ type
 const
   ZFLATE_ZLIB = 1;
   ZFLATE_GZIP = 2;
+
+  ZFLATE_OK           = 0;
+  ZFLATE_ECHUNKTOOBIG = 101; //'max single chunk size is 32k'
+  ZFLATE_EBUFFER      = 102; //'buffer error'
+  ZFLATE_ESTREAM      = 103; //'stream error'
+  ZFLATE_EDATA        = 104; //'data error'
+  ZFLATE_EDEFLATE     = 105; //'deflate error'
+  ZFLATE_EINFLATE     = 106; //'inflate error'
+  ZFLATE_EDEFLATEINIT = 107; //'deflate init failed'
+  ZFLATE_EINFLATEINIT = 108; //'inflate init failed'
+  ZFLATE_EZLIBINVALID = 109; //'invalid zlib header'
+  ZFLATE_EGZIPINVALID = 110; //'invalid gzip header'
+  ZFLATE_ECHECKSUM    = 112; //'invalid checksum'
+  ZFLATE_EOUTPUTSIZE  = 113; //'output size doesnt match original file size'
+
+threadvar
+  zlasterror: integer;
 
 //deflate chunks
 function zdeflateinit(var z: tzflate; level: dword=9): boolean;
@@ -107,20 +128,20 @@ function gzdecode(data: pointer; size: dword; var output: pointer; var outputsiz
 //decompress whole GZIP string at once
 function gzdecode(str: string): string;
 
+//transalte error code to message
+function zflatetranslatecode(code: integer): string;
+
 //compute crc32b checksum
 function crc32b(crc: dword; buf: pbyte; len: dword): dword;
 //compute adler32 checksum
 function adler32(adler: dword; buf: pbyte; len: dword): dword;
 
-threadvar
-  zlasterror: string;
-
 implementation
 
-function zerror(var z: tzflate; msg: string): boolean;
+function zerror(var z: tzflate; error: integer): boolean;
 begin
-  z.error := msg;
-  zlasterror := msg;
+  z.error := error;
+  zlasterror := error;
   result := false;
 end;
 
@@ -128,7 +149,8 @@ end;
 
 function zdeflateinit(var z: tzflate; level: dword=9): boolean;
 begin
-  result := false;     
+  result := false;       
+  zlasterror := 0;
   fillchar(z, sizeof(z), 0);
   if deflateInit2(z.z, level, Z_DEFLATED, -MAX_WBITS, DEF_MEM_LEVEL, 0) <> Z_OK then exit;
   result := true;
@@ -140,7 +162,7 @@ var
 begin
   result := false;
 
-  if size > 1024*32 then exit(zerror(z, 'max single chunk size is 32k'));
+  if size > 1024*32 then exit(zerror(z, ZFLATE_ECHUNKTOOBIG));
 
   z.z.next_in := data;
   z.z.avail_in := size;
@@ -152,16 +174,16 @@ begin
   else
     i := deflate(z.z, Z_NO_FLUSH);
 
-  if i = Z_BUF_ERROR then exit(zerror(z, 'buffer error'));
-  if i = Z_STREAM_ERROR then exit(zerror(z, 'stream error'));
-  if i = Z_DATA_ERROR then exit(zerror(z, 'data error'));
+  if i = Z_BUF_ERROR then exit(zerror(z, ZFLATE_EBUFFER));
+  if i = Z_STREAM_ERROR then exit(zerror(z, ZFLATE_ESTREAM));
+  if i = Z_DATA_ERROR then exit(zerror(z, ZFLATE_EDATA));
 
   if (i = Z_OK) or (i = Z_STREAM_END) then begin
     z.bytesavailable := z.z.total_out-z.totalout;
     z.totalout += z.bytesavailable;
     result := true;
   end else begin
-    exit(zerror(z, 'deflate error'));
+    exit(zerror(z, ZFLATE_EDEFLATE));
   end;
 
   if lastchunk then begin
@@ -175,6 +197,7 @@ end;
 function zinflateinit(var z: tzflate): boolean;
 begin
   result := false;
+  zlasterror := 0;
   fillchar(z, sizeof(z), 0);
   if inflateInit2(z.z, -MAX_WBITS) <> Z_OK then exit;
   result := true;
@@ -196,16 +219,16 @@ begin
   else
     i := inflate(z.z, Z_NO_FLUSH);
 
-  if i = Z_BUF_ERROR then exit(zerror(z, 'buffer error'));
-  if i = Z_STREAM_ERROR then exit(zerror(z, 'stream error'));
-  if i = Z_DATA_ERROR then exit(zerror(z, 'data error'));
+  if i = Z_BUF_ERROR then exit(zerror(z, ZFLATE_EBUFFER));
+  if i = Z_STREAM_ERROR then exit(zerror(z, ZFLATE_ESTREAM));
+  if i = Z_DATA_ERROR then exit(zerror(z, ZFLATE_EDATA));
 
   if (i = Z_OK) or (i = Z_STREAM_END) then begin
     z.bytesavailable := z.z.total_out-z.totalout;
     z.totalout += z.bytesavailable;
     result := true;
   end else begin
-    exit(zerror(z, 'inflate error'));
+    exit(zerror(z, ZFLATE_EINFLATE));
   end;
 
   if lastchunk then begin
@@ -329,7 +352,7 @@ var
   z: tzflate;
 begin
   result := false;
-  if not zdeflateinit(z, level) then exit(zerror(z, 'deflate init failed'));
+  if not zdeflateinit(z, level) then exit(zerror(z, ZFLATE_EDEFLATEINIT));
   if not zdeflatewrite(z, data, size, true) then exit;
   output := getmem(z.bytesavailable);
   move(z.buffer[0], output^, z.bytesavailable);
@@ -356,7 +379,7 @@ var
   z: tzflate;
 begin
   result := false;
-  if not zinflateinit(z) then exit(zerror(z, 'inflate init failed'));
+  if not zinflateinit(z) then exit(zerror(z, ZFLATE_EINFLATEINIT));
   if not zinflatewrite(z, data, size, true) then exit;
   output := getmem(z.bytesavailable);
   move(z.buffer[0], output^, z.bytesavailable);
@@ -409,8 +432,8 @@ var
   header, footer: string;
 begin
   result := false;
-  if not zdeflateinit(z) then exit(zerror(z, 'deflate init failed'));
-  if not zdeflatewrite(z, data, size, true) then exit(zerror(z, 'deflate failed'));
+  if not zdeflateinit(z) then exit(zerror(z, ZFLATE_EDEFLATEINIT));
+  if not zdeflatewrite(z, data, size, true) then exit(zerror(z, ZFLATE_EDEFLATE));
 
   header := makezlibheader(level);
   footer := makezlibfooter(adler32(0, data, size));
@@ -445,11 +468,11 @@ var
   checksum: dword;
 begin
   result := false;
-  if not zreadzlibheader(data, zlib) then exit(zerror(z, 'invalid zlib header'));
-  if not zinflateinit(z) then exit(zerror(z, 'inflate init failed'));
-  if not zinflatewrite(z, data+zlib.streamat, size-zlib.streamat-zlib.footerlen, true) then exit(zerror(z, 'decompression failed'));
+  if not zreadzlibheader(data, zlib) then exit(zerror(z, ZFLATE_EZLIBINVALID));
+  if not zinflateinit(z) then exit(zerror(z, ZFLATE_EINFLATEINIT));
+  if not zinflatewrite(z, data+zlib.streamat, size-zlib.streamat-zlib.footerlen, true) then exit(zerror(z, ZFLATE_EINFLATE));
   checksum := pdword(data+size-4)^;
-  if adler32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit(zerror(z, 'invalid checksum'));
+  if adler32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit(zerror(z, ZFLATE_ECHECKSUM));
   outputsize := z.bytesavailable;
   output := getmem(outputsize);
   move(z.buffer[0], output^, outputsize);
@@ -524,8 +547,8 @@ var
   header, footer: string;
 begin
   result := false;
-  if not zdeflateinit(z) then exit(zerror(z, 'invalid gzip header'));
-  if not zdeflatewrite(z, data, size, true) then exit(zerror(z, 'invalid gzip header'));
+  if not zdeflateinit(z) then exit(zerror(z, ZFLATE_EDEFLATEINIT));
+  if not zdeflatewrite(z, data, size, true) then exit(zerror(z, ZFLATE_EDEFLATE));
 
   header := makegzipheader(level, filename, comment);
   footer := makegzipfooter(size, crc32b(0, data, size));
@@ -562,13 +585,13 @@ var
   checksum: dword;
 begin
   result := false;
-  if not zreadgzipheader(data, gzip) then exit;
-  if not zinflateinit(z) then exit;
-  if not zinflatewrite(z, data+gzip.streamat, size-gzip.streamat-gzip.footerlen, true) then exit(zerror(z, 'decompression failed'));
+  if not zreadgzipheader(data, gzip) then exit(zerror(z, ZFLATE_EGZIPINVALID));
+  if not zinflateinit(z) then exit(zerror(z, ZFLATE_EINFLATEINIT));
+  if not zinflatewrite(z, data+gzip.streamat, size-gzip.streamat-gzip.footerlen, true) then exit(zerror(z, ZFLATE_EINFLATE));
   originalsize := pdword(data+size-4)^;
-  if originalsize <> z.bytesavailable then exit(zerror(z, 'output size doesnt match original file size'));
+  if originalsize <> z.bytesavailable then exit(zerror(z, ZFLATE_EOUTPUTSIZE));
   checksum := pdword(data+size-8)^;
-  if crc32b(0, @z.buffer[0], z.bytesavailable) <> checksum then exit(zerror(z, 'invalid checksum'));
+  if crc32b(0, @z.buffer[0], z.bytesavailable) <> checksum then exit(zerror(z, ZFLATE_ECHECKSUM));
   outputsize := z.bytesavailable;
   output := getmem(outputsize);
   move(z.buffer[0], output^, outputsize);
@@ -585,6 +608,33 @@ begin
   setlength(result, d);
   move(p^, result[1], d);
   freemem(p);
+end;
+
+// -- error translation -------------------
+
+function zflatetranslatecode(code: integer): string;
+begin
+  {$ifdef zflate_error_translation}
+  result := 'unknown';
+
+  case code of
+    ZFLATE_OK          : result := 'ok';
+    ZFLATE_ECHUNKTOOBIG: result := 'max single chunk size is 32k';
+    ZFLATE_EBUFFER     : result := 'buffer error';
+    ZFLATE_ESTREAM     : result := 'stream error';
+    ZFLATE_EDATA       : result := 'data error';
+    ZFLATE_EDEFLATE    : result := 'deflate error';
+    ZFLATE_EINFLATE    : result := 'inflate error';
+    ZFLATE_EDEFLATEINIT: result := 'deflate init failed';
+    ZFLATE_EINFLATEINIT: result := 'inflate init failed';
+    ZFLATE_EZLIBINVALID: result := 'invalid zlib header';
+    ZFLATE_EGZIPINVALID: result := 'invalid gzip header';
+    ZFLATE_ECHECKSUM   : result := 'invalid checksum';
+    ZFLATE_EOUTPUTSIZE : result := 'output size doesnt match original file size';
+  end;
+  {$else}
+  system.Str(code, result);
+  {$endif}
 end;
 
 // -- crc32b ------------------------------
