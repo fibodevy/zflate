@@ -30,7 +30,7 @@
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
-        <Filename Value="..\src\zflate.pas"/>
+        <Filename Value="..\..\src\zflate.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>
     </Units>
@@ -43,7 +43,7 @@
     </Target>
     <SearchPaths>
       <IncludeFiles Value="$(ProjOutDir)"/>
-      <OtherUnitFiles Value="..\src"/>
+      <OtherUnitFiles Value="..\..\src"/>
       <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
     </SearchPaths>
     <CodeGeneration>
@@ -57,13 +57,11 @@
       <Debugging>
         <GenerateDebugInfo Value="False"/>
         <RunWithoutDebug Value="True"/>
+        <DebugInfoType Value="dsDwarf3"/>
         <StripSymbols Value="True"/>
       </Debugging>
       <LinkSmart Value="True"/>
     </Linking>
-    <Other>
-      <CustomOptions Value="-dDYNAMIC_CRC_TABLE"/>
-    </Other>
   </CompilerOptions>
   <Debugging>
     <Exceptions>
