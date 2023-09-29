@@ -27,7 +27,7 @@ unit zflate;
 
 interface
 
-uses ZBase, ZInflate, ZDeflate, adler;
+uses ZBase, ZInflate, ZDeflate;
 
 type
   tzflate = record
@@ -109,6 +109,7 @@ function gzdecode(str: string): string;
 
 //compute crc32b checksum
 function crc32b(crc: dword; buf: pbyte; len: dword): dword;
+function adler32(adler: dword; buf: pbyte; len: dword): dword;
 
 threadvar
   zlasterror: string;
@@ -622,6 +623,39 @@ begin
   end;
 
   result := crc xor $ffffffff;
+end;
+
+// -- adler32 -----------------------------
+
+function adler32(adler: dword; buf: pbyte; len: dword): dword;
+const
+  base = dword(65521);
+  nmax = 3854;
+var
+  d1, d2: dword;
+  k: integer;
+begin
+  if buf = nil then exit(1);
+
+  d1 := adler and $ffff;
+  d2 := (adler shr 16) and $ffff;
+
+  while (len > 0) do begin
+    if len < nmax then
+      k := len
+    else
+      k := nmax;
+    dec(len, k);
+    while (k > 0) do begin
+      inc(d1, buf^);
+      inc(d2, d1);
+      inc(buf);
+      dec(k);
+    end;
+    d1 := d1 mod base;
+    d2 := d2 mod base;
+  end;
+  adler32 := (d2 shl 16) or d1;
 end;
 
 end.
