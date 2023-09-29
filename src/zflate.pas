@@ -36,7 +36,7 @@ uses ZBase, ZInflate, ZDeflate;
 type
   tzflate = record
     z: z_stream;
-    totalout: qword;
+    totalout: dword;
     bytesavailable: dword;
     buffer: array of byte;
     error: integer;
@@ -122,7 +122,7 @@ function gzuncompress(str: string): string;
 //make GZIP header
 function makegzipheader(compressionlevel: integer; filename: string=''; comment: string=''): string;
 //make GZIP footer
-function makegzipfooter(originalsize: dword; crc32b: dword): string;
+function makegzipfooter(originalsize: dword; crc: dword): string;
 //compress whole buffer to GZIP at once
 function gzencode(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9; filename: string=''; comment: string=''): boolean;
 //compress whole string to GZIP at once
@@ -341,6 +341,8 @@ var
 begin
   result := false;
 
+  if size < 6 then exit; //6 bytes is minimum for ZLIB, 18 for GZIP
+
   if zstreambasicinfo(data, streamtype, startsat, trailing) then begin
     streamsize := size-startsat-trailing;
     result := true;
@@ -372,14 +374,14 @@ begin
     else output := reallocmem(output, outputsize+z.bytesavailable);
     //move buffer to output
     move(z.buffer[0], (output+p)^, z.bytesavailable);
-    //move output position
+    //increase output position
     inc(p, z.bytesavailable);
     //increase output size
-    outputsize += z.bytesavailable;
-    //move data pointer
-    data += chunksize;
+    inc(outputsize, z.bytesavailable);
+    //increase data pointer
+    inc(data, chunksize);
     //how much data left
-    size -= chunksize;
+    dec(size, chunksize);
   end;
 
   result := true;
@@ -422,14 +424,14 @@ begin
     else output := reallocmem(output, outputsize+z.bytesavailable);
     //move buffer to output
     move(z.buffer[0], (output+p)^, z.bytesavailable);
-    //move output position
+    //increase output position
     inc(p, z.bytesavailable);
     //increase output size
-    outputsize += z.bytesavailable;
-    //move data pointer
-    data += chunksize;
+    inc(outputsize, z.bytesavailable);
+    //increase data pointer
+    inc(data, chunksize);
     //how much data left
-    size -= chunksize;
+    dec(size, chunksize);
   end;
 
   result := true;
@@ -588,10 +590,10 @@ begin
   result[4] := chr(flags);
 end;
 
-function makegzipfooter(originalsize: dword; crc32b: dword): string;
+function makegzipfooter(originalsize: dword; crc: dword): string;
 begin
   setlength(result, 8);
-  move(crc32b, result[1], 4);
+  move(crc, result[1], 4);
   move(originalsize, result[1+4], 4);
 end;
 
