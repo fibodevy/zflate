@@ -109,6 +109,7 @@ function gzdecode(str: string): string;
 
 //compute crc32b checksum
 function crc32b(crc: dword; buf: pbyte; len: dword): dword;
+//compute adler32 checksum
 function adler32(adler: dword; buf: pbyte; len: dword): dword;
 
 threadvar
