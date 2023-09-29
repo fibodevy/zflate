@@ -88,10 +88,10 @@ function zinflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: bo
 function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
 //read gzip header
 function zreadgzipheader(data: pointer; var info: tgzipinfo): boolean;
-//find out where deflate stream starts and what is its size
-function zfindstream(data: pointer; size: dword; var streamtype: dword; var startsat: dword; var streamsize: dword): boolean;
 //get stream basic info; by reading just few first bytes you will know the stream type, where is deflate start and how many bytes are trailing bytes (footer)
 function zstreambasicinfo(data: pointer; var streamtype: dword; var startsat: dword; var trailing: dword): boolean;
+//find out where deflate stream starts and what is its size
+function zfindstream(data: pointer; size: dword; var streamtype: dword; var startsat: dword; var streamsize: dword): boolean;
 
 //compress whole DEFLATE buffer at once
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
@@ -299,29 +299,6 @@ begin
   end;
 end;
 
-function zfindstream(data: pointer; size: dword; var streamtype: dword; var startsat: dword; var streamsize: dword): boolean;
-var
-  zlib: tzlibinfo;
-  gzip: tgzipinfo;
-begin
-  result := false;
-  streamtype := 0;
-
-  if (size > 2) and zreadzlibheader(data, zlib) then begin
-    streamtype := ZFLATE_ZLIB;
-    startsat := zlib.streamat;
-    streamsize := size-startsat-zlib.footerlen; //footer: adler32
-    exit(true);
-  end;
-
-  if (size > 10) and zreadgzipheader(data, gzip) then begin
-    streamtype := ZFLATE_GZIP;
-    startsat := gzip.streamat;
-    streamsize := size-startsat-gzip.footerlen; //footer: crc32 + original file size
-    exit(true);
-  end;
-end;
-
 function zstreambasicinfo(data: pointer; var streamtype: dword; var startsat: dword; var trailing: dword): boolean;
 var
   zlib: tzlibinfo;
@@ -342,6 +319,18 @@ begin
     startsat := gzip.streamat;
     trailing := 8; //footer: crc32 + original file size
     exit(true);
+  end;
+end;
+
+function zfindstream(data: pointer; size: dword; var streamtype: dword; var startsat: dword; var streamsize: dword): boolean;
+var
+  trailing: dword;
+begin
+  result := false;
+
+  if zstreambasicinfo(data, streamtype, startsat, trailing) then begin
+    streamsize := size-startsat-trailing;
+    result := true;
   end;
 end;
 
