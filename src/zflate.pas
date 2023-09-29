@@ -355,6 +355,7 @@ var
 begin
   result := false;
   if not zdeflateinit(z, level) then exit(zerror(z, ZFLATE_EDEFLATEINIT));
+  //TODO: compressing streams larger than 32k
   if not zdeflatewrite(z, data, size, true) then exit;
   output := getmem(z.bytesavailable);
   move(z.buffer[0], output^, z.bytesavailable);
@@ -386,7 +387,6 @@ begin
   result := false;
   if not zinflateinit(z) then exit(zerror(z, ZFLATE_EINFLATEINIT));
 
-  //if not zinflatewrite(z, data, size, true) then exit;
   output := nil;
   outputsize := 0;
   p := 0;
@@ -412,9 +412,6 @@ begin
     size -= chunksize;
   end;
 
-  //output := getmem(z.bytesavailable);
-  //move(z.buffer[0], output^, z.bytesavailable);
-  //outputsize := z.bytesavailable;
   result := true;
 end;
 
@@ -500,13 +497,15 @@ var
 begin
   result := false;
   if not zreadzlibheader(data, zlib) then exit(zerror(z, ZFLATE_EZLIBINVALID));
-  if not zinflateinit(z) then exit(zerror(z, ZFLATE_EINFLATEINIT));
-  if not zinflatewrite(z, data+zlib.streamat, size-zlib.streamat-zlib.footerlen, true) then exit(zerror(z, ZFLATE_EINFLATE));
+
   checksum := pdword(data+size-4)^;
-  if adler32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit(zerror(z, ZFLATE_ECHECKSUM));
-  outputsize := z.bytesavailable;
-  output := getmem(outputsize);
-  move(z.buffer[0], output^, outputsize);
+
+  data += zlib.streamat;
+  size -= zlib.streamat+zlib.footerlen;
+  if not gzinflate(data, size, output, outputsize) then exit;
+
+  if adler32(adler32(0, nil, 0), output, outputsize) <> swapendian(checksum) then exit(zerror(z, ZFLATE_ECHECKSUM));
+
   result := true;
 end;
 
@@ -609,8 +608,6 @@ end;
 // -- GZIP decompress ---------------------
 
 function gzdecode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
-const
-  maxchunksize = 1024*32;
 var
   gzip: tgzipinfo;
   z: tzflate;
@@ -618,8 +615,8 @@ var
 begin
   result := false;
   if not zreadgzipheader(data, gzip) then exit(zerror(z, ZFLATE_EGZIPINVALID));
-                                                                    
-  originalsize := pdword(data+size-4)^; 
+
+  originalsize := pdword(data+size-4)^;
   checksum := pdword(data+size-8)^;
 
   data += gzip.streamat;
@@ -705,11 +702,11 @@ end;
 
 // -- crc32b ------------------------------
 
-function crc32b(crc: dword; buf: pbyte; len: dword): dword;
-const
-  crc32_table_empty: boolean = true;
 var
-  crc32_table: array[byte] of dword;
+  crc32_table: array[byte] of dword;   
+  crc32_table_empty: boolean = true;
+
+function crc32b(crc: dword; buf: pbyte; len: dword): dword;
 procedure make_crc32_table;
 var
   d: dword;
