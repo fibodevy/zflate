@@ -73,9 +73,9 @@ function zfindstream(data: pointer; size: dword; var streamtype: dword; var star
 function zstreambasicinfo(data: pointer; var streamtype: dword; var startsat: dword; var trailing: dword): boolean;
 
 //compress whole DEFLATE buffer at once
-function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
 //compress whole DEFLATE string at once
-function gzdeflate(str: string): string;
+function gzdeflate(str: string; level: dword=9): string;
 //decompress whole DEFLATE buffer at once
 function gzinflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 //decompress whole DEFLATE string at once
@@ -311,12 +311,12 @@ end;
 
 // -- deflate -----------------------------
 
-function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
 var
   z: tzflate;
 begin
   result := false;
-  if not zdeflateinit(z, 9) then exit(zerror(z, 'deflate init failed'));
+  if not zdeflateinit(z, level) then exit(zerror(z, 'deflate init failed'));
   if not zdeflatewrite(z, data, size, true) then exit;
   output := getmem(z.bytesavailable);
   move(z.buffer[0], output^, z.bytesavailable);
@@ -324,13 +324,13 @@ begin
   result := true;
 end;
 
-function gzdeflate(str: string): string;
+function gzdeflate(str: string; level: dword=9): string;
 var
   p: pointer;
   d: dword;
 begin
   result := '';
-  if not gzdeflate(@str[1], length(str), p, d) then exit;
+  if not gzdeflate(@str[1], length(str), p, d, level) then exit;
   setlength(result, d);
   move(p^, result[1], d);
   freemem(p);
