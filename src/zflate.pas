@@ -38,7 +38,7 @@ type
     z: z_stream;
     totalout: qword;
     bytesavailable: dword;
-    buffer: array[0..1024*32-1] of byte;
+    buffer: array of byte;
     error: integer;
   end;
 
@@ -81,7 +81,7 @@ function zdeflateinit(var z: tzflate; level: dword=9): boolean;
 function zdeflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 
 //inflate chunks
-function zinflateinit(var z: tzflate): boolean;
+function zinflateinit(var z: tzflate; buffersize: dword=1024*512): boolean;
 function zinflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 
 //read zlib header
@@ -157,6 +157,7 @@ begin
   result := false;       
   zlasterror := 0;
   fillchar(z, sizeof(z), 0);
+  setlength(z.buffer, 1024*32);
   if deflateInit2(z.z, level, Z_DEFLATED, -MAX_WBITS, DEF_MEM_LEVEL, 0) <> Z_OK then exit;
   result := true;
 end;
@@ -167,7 +168,7 @@ var
 begin
   result := false;
 
-  if size > 1024*32 then exit(zerror(z, ZFLATE_ECHUNKTOOBIG));
+  if size > sizeof(z.buffer) then exit(zerror(z, ZFLATE_ECHUNKTOOBIG));
 
   z.z.next_in := data;
   z.z.avail_in := size;
@@ -199,11 +200,12 @@ end;
 
 // -- inflate chunks ----------------------
 
-function zinflateinit(var z: tzflate): boolean;
+function zinflateinit(var z: tzflate; buffersize: dword=1024*512): boolean;
 begin
   result := false;
   zlasterror := 0;
   fillchar(z, sizeof(z), 0);
+  setlength(z.buffer, buffersize);
   if inflateInit2(z.z, -MAX_WBITS) <> Z_OK then exit;
   result := true;
 end;
@@ -222,9 +224,15 @@ begin
   if lastchunk then
     i := inflate(z.z, Z_FINISH)
   else
+    //i := inflate(z.z, Z_SYNC_FLUSH);
     i := inflate(z.z, Z_NO_FLUSH);
 
-  if i = Z_BUF_ERROR then exit(zerror(z, ZFLATE_EBUFFER));
+  if i = Z_BUF_ERROR then begin
+    //buffer too small
+    inflateEnd(z.z);
+    exit(zerror(z, ZFLATE_EBUFFER));
+  end;
+
   if i = Z_STREAM_ERROR then exit(zerror(z, ZFLATE_ESTREAM));
   if i = Z_DATA_ERROR then exit(zerror(z, ZFLATE_EDATA));
 
@@ -232,9 +240,9 @@ begin
     z.bytesavailable := z.z.total_out-z.totalout;
     z.totalout += z.bytesavailable;
     result := true;
-  end else begin
+    //if lastchunk then result := deflateEnd(z.z) = Z_OK;
+  end else
     exit(zerror(z, ZFLATE_EINFLATE));
-  end;
 
   if lastchunk then begin
     i := inflateEnd(z.z);
@@ -369,15 +377,44 @@ end;
 // -- inflate -----------------------------
 
 function gzinflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+const
+  maxchunksize = 1024*32;
 var
   z: tzflate;
+  p, chunksize: dword;
 begin
   result := false;
   if not zinflateinit(z) then exit(zerror(z, ZFLATE_EINFLATEINIT));
-  if not zinflatewrite(z, data, size, true) then exit;
-  output := getmem(z.bytesavailable);
-  move(z.buffer[0], output^, z.bytesavailable);
-  outputsize := z.bytesavailable;
+
+  //if not zinflatewrite(z, data, size, true) then exit;
+  output := nil;
+  outputsize := 0;
+  p := 0;
+
+  //decompress
+  while size > 0 do begin
+    chunksize := size;
+    if chunksize > maxchunksize then chunksize := maxchunksize;
+    //decompress
+    if not zinflatewrite(z, data, chunksize, chunksize<maxchunksize) then exit; //might be ZFLATE_EBUFFER = buffer too small
+    //alloc mem for output
+    if output = nil then output := getmem(z.bytesavailable)
+    else output := reallocmem(output, outputsize+z.bytesavailable);
+    //move buffer to output
+    move(z.buffer[0], (output+p)^, z.bytesavailable);
+    //move output position
+    inc(p, z.bytesavailable);
+    //increase output size
+    outputsize += z.bytesavailable;
+    //move data pointer
+    data += chunksize;
+    //how much data left
+    size -= chunksize;
+  end;
+
+  //output := getmem(z.bytesavailable);
+  //move(z.buffer[0], output^, z.bytesavailable);
+  //outputsize := z.bytesavailable;
   result := true;
 end;
 
@@ -572,23 +609,26 @@ end;
 // -- GZIP decompress ---------------------
 
 function gzdecode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+const
+  maxchunksize = 1024*32;
 var
   gzip: tgzipinfo;
   z: tzflate;
-  originalsize: dword;
-  checksum: dword;
+  originalsize, checksum: dword;
 begin
   result := false;
   if not zreadgzipheader(data, gzip) then exit(zerror(z, ZFLATE_EGZIPINVALID));
-  if not zinflateinit(z) then exit(zerror(z, ZFLATE_EINFLATEINIT));
-  if not zinflatewrite(z, data+gzip.streamat, size-gzip.streamat-gzip.footerlen, true) then exit(zerror(z, ZFLATE_EINFLATE));
-  originalsize := pdword(data+size-4)^;
-  if originalsize <> z.bytesavailable then exit(zerror(z, ZFLATE_EOUTPUTSIZE));
+                                                                    
+  originalsize := pdword(data+size-4)^; 
   checksum := pdword(data+size-8)^;
-  if crc32b(0, @z.buffer[0], z.bytesavailable) <> checksum then exit(zerror(z, ZFLATE_ECHECKSUM));
-  outputsize := z.bytesavailable;
-  output := getmem(outputsize);
-  move(z.buffer[0], output^, outputsize);
+
+  data += gzip.streamat;
+  size -= gzip.streamat+gzip.footerlen;
+  if not gzinflate(data, size, output, outputsize) then exit;
+
+  if originalsize <> outputsize then exit(zerror(z, ZFLATE_EOUTPUTSIZE));
+  if crc32b(0, output, outputsize) <> checksum then exit(zerror(z, ZFLATE_ECHECKSUM));
+
   result := true;
 end;
 
