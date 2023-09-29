@@ -216,56 +216,64 @@ end;
 
 function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
 begin
-  fillchar(info, sizeof(info), 0);
-  result := (pbyte(data)^ = $78) and (pbyte(data+1)^ in [$01, $5e, $9c, $da]);
-  if not result then exit; 
-  info.footerlen := 4;
-  info.streamat := 2;
+  result := false;
+  try
+    fillchar(info, sizeof(info), 0);
+    result := (pbyte(data)^ = $78) and (pbyte(data+1)^ in [$01, $5e, $9c, $da]);
+    if not result then exit;
+    info.footerlen := 4;
+    info.streamat := 2;
+  except
+  end;
 end;
 
 function zreadgzipheader(data: pointer; var info: tgzipinfo): boolean;
 var
   flags: byte;
   w: word;
-begin          
-  fillchar(info, sizeof(info), 0);
+begin
   result := false;
-  if not ((pbyte(data)^ = $1f) and (pbyte(data+1)^ = $8b)) then exit;
-  info.footerlen := 8;
+  try
+    fillchar(info, sizeof(info), 0);
+    if not ((pbyte(data)^ = $1f) and (pbyte(data+1)^ = $8b)) then exit;
 
-  //mod time
-  move((data+4)^, info.modtime, 4);
+    info.footerlen := 8;
 
-  //stream position
-  info.streamat := 10;
+    //mod time
+    move((data+4)^, info.modtime, 4);
 
-  //flags
-  flags := pbyte(data+3)^;
+    //stream position
+    info.streamat := 10;
 
-  //extra
-  if (flags and $04) <> 0 then begin
-    w := pword(data+info.streamat)^;
-    info.streamat += 2+w;
+    //flags
+    flags := pbyte(data+3)^;
+
+    //extra
+    if (flags and $04) <> 0 then begin
+      w := pword(data+info.streamat)^;
+      info.streamat += 2+w;
+    end;
+
+    //filename
+    if (flags and $08) <> 0 then begin
+      info.filename := pchar(data+info.streamat);
+      info.streamat += length(info.filename)+1;
+    end;
+
+    //comment
+    if (flags and $10) <> 0 then begin
+      info.comment := pchar(data+info.streamat);
+      info.streamat += length(info.comment)+1;
+    end;
+
+    //crc16?
+    if (flags and $02) <> 0 then begin
+      info.streamat += 2;
+    end;
+
+    result := true;
+  except
   end;
-
-  //filename
-  if (flags and $08) <> 0 then begin
-    info.filename := pchar(data+info.streamat);
-    info.streamat += length(info.filename)+1;
-  end;
-
-  //comment
-  if (flags and $10) <> 0 then begin
-    info.comment := pchar(data+info.streamat);
-    info.streamat += length(info.comment)+1;
-  end;
-
-  //crc16?
-  if (flags and $02) <> 0 then begin
-    info.streamat += 2;
-  end;
-
-  result := true;
 end;
 
 function zfindstream(data: pointer; size: dword; var streamtype: dword; var startsat: dword; var streamsize: dword): boolean;
@@ -276,14 +284,14 @@ begin
   result := false;
   streamtype := 0;
 
-  if zreadzlibheader(data, zlib) then begin
+  if (size > 2) and zreadzlibheader(data, zlib) then begin
     streamtype := ZSTREAM_ZLIB;
     startsat := zlib.streamat;
     streamsize := size-startsat-zlib.footerlen; //footer: adler32
     exit(true);
   end;
 
-  if zreadgzipheader(data, gzip) then begin
+  if (size > 10) and zreadgzipheader(data, gzip) then begin
     streamtype := ZSTREAM_GZIP;
     startsat := gzip.streamat;
     streamsize := size-startsat-gzip.footerlen; //footer: crc32 + original file size
