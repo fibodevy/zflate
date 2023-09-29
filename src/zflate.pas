@@ -279,14 +279,14 @@ begin
   if zreadzlibheader(data, zlib) then begin
     streamtype := ZSTREAM_ZLIB;
     startsat := zlib.streamat;
-    streamsize := size-startsat-4; //footer: adler32
+    streamsize := size-startsat-zlib.footerlen; //footer: adler32
     exit(true);
   end;
 
   if zreadgzipheader(data, gzip) then begin
     streamtype := ZSTREAM_GZIP;
     startsat := gzip.streamat;
-    streamsize := size-startsat-8; //footer: crc32 + original file size
+    streamsize := size-startsat-gzip.footerlen; //footer: crc32 + original file size
     exit(true);
   end;
 end;
