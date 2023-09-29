@@ -107,11 +107,15 @@ function gzdecode(data: pointer; size: dword; var output: pointer; var outputsiz
 //decompress whole GZIP string at once
 function gzdecode(str: string): string;
 
+threadvar
+  zlasterror: string;
+
 implementation
 
 function zerror(var z: tzflate; msg: string): boolean;
 begin
   z.error := msg;
+  zlasterror := msg;
   result := false;
 end;
 
@@ -151,6 +155,8 @@ begin
     z.bytesavailable := z.z.total_out-z.totalout;
     z.totalout += z.bytesavailable;
     result := true;
+  end else begin
+    exit(zerror(z, 'deflate error'));
   end;
 
   if lastchunk then begin
@@ -193,6 +199,8 @@ begin
     z.bytesavailable := z.z.total_out-z.totalout;
     z.totalout += z.bytesavailable;
     result := true;
+  end else begin
+    exit(zerror(z, 'inflate error'));
   end;
 
   if lastchunk then begin
@@ -308,7 +316,7 @@ var
   z: tzflate;
 begin
   result := false;
-  if not zdeflateinit(z, 9) then exit;
+  if not zdeflateinit(z, 9) then exit(zerror(z, 'deflate init failed'));
   if not zdeflatewrite(z, data, size, true) then exit;
   output := getmem(z.bytesavailable);
   move(z.buffer[0], output^, z.bytesavailable);
@@ -335,7 +343,7 @@ var
   z: tzflate;
 begin
   result := false;
-  if not zinflateinit(z) then exit;
+  if not zinflateinit(z) then exit(zerror(z, 'inflate init failed'));
   if not zinflatewrite(z, data, size, true) then exit;
   output := getmem(z.bytesavailable);
   move(z.buffer[0], output^, z.bytesavailable);
@@ -388,8 +396,8 @@ var
   header, footer: string;
 begin
   result := false;
-  if not zdeflateinit(z) then exit;
-  if not zdeflatewrite(z, data, size, true) then exit;
+  if not zdeflateinit(z) then exit(zerror(z, 'deflate init failed'));
+  if not zdeflatewrite(z, data, size, true) then exit(zerror(z, 'deflate failed'));
 
   header := makezlibheader(level);
   footer := makezlibfooter(adler32(0, data, size));
@@ -424,11 +432,11 @@ var
   checksum: dword;
 begin
   result := false;
-  if not zreadzlibheader(data, zlib) then exit;
-  if not zinflateinit(z) then exit;
-  if not zinflatewrite(z, data+zlib.streamat, size-zlib.streamat-zlib.footerlen, true) then exit;
+  if not zreadzlibheader(data, zlib) then exit(zerror(z, 'invalid zlib header'));
+  if not zinflateinit(z) then exit(zerror(z, 'inflate init failed'));
+  if not zinflatewrite(z, data+zlib.streamat, size-zlib.streamat-zlib.footerlen, true) then exit(zerror(z, 'decompression failed'));
   checksum := pdword(data+size-4)^;
-  if adler32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit; //invalid checsum
+  if adler32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit(zerror(z, 'invalid checksum'));
   outputsize := z.bytesavailable;
   output := getmem(outputsize);
   move(z.buffer[0], output^, outputsize);
@@ -503,8 +511,8 @@ var
   header, footer: string;
 begin
   result := false;
-  if not zdeflateinit(z) then exit;
-  if not zdeflatewrite(z, data, size, true) then exit;
+  if not zdeflateinit(z) then exit(zerror(z, 'invalid gzip header'));
+  if not zdeflatewrite(z, data, size, true) then exit(zerror(z, 'invalid gzip header'));
 
   header := makegzipheader(level, filename, comment);
   footer := makegzipfooter(size, crc32(0, data, size));
@@ -543,11 +551,11 @@ begin
   result := false;
   if not zreadgzipheader(data, gzip) then exit;
   if not zinflateinit(z) then exit;
-  if not zinflatewrite(z, data+gzip.streamat, size-gzip.streamat-gzip.footerlen, true) then exit;
+  if not zinflatewrite(z, data+gzip.streamat, size-gzip.streamat-gzip.footerlen, true) then exit(zerror(z, 'decompression failed'));
   originalsize := pdword(data+size-4)^;
-  if originalsize <> z.bytesavailable then exit; //invalid size
+  if originalsize <> z.bytesavailable then exit(zerror(z, 'output size doesnt match original file size'));
   checksum := pdword(data+size-8)^;
-  if crc32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit; //invalid checksum
+  if crc32(0, @z.buffer[0], z.bytesavailable) <> checksum then exit(zerror(z, 'invalid checksum'));
   outputsize := z.bytesavailable;
   output := getmem(outputsize);
   move(z.buffer[0], output^, outputsize);
