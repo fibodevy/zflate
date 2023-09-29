@@ -107,11 +107,87 @@ begin
   writeln('done demo 3');
 end;
 
+procedure decompess_file(path: string);
+var
+  h: hwnd;
+  d: dword;
+  s: string;
+  streamtype, startsat, trailing: dword;
+  size: dword;
+  z: tzflate;
+begin
+  writeln('file = ', path);
+
+  //get file contents
+  h := _lopen(pchar(path), OF_READ);
+  if h = 0 then begin
+    writeln('cant open file');
+    exit;
+  end;
+  d := GetFileSize(h, nil);
+  setlength(s, d);
+  _lread(h, @s[1], d);
+  _lclose(h);
+
+  writeln('got ', length(s), ' bytes of compressed data');
+
+  //get info about stream
+  if zstreambasicinfo(@s[1], streamtype, startsat, trailing) then begin
+    writeln('detected stream type ', streamtype);
+    writeln('streams starts at ', startsat);
+    writeln('stream trailing bytes is ', trailing);
+    size := d-startsat-trailing;
+  end else begin
+    //unknown stream
+    writeln('couldnt determine stream type');
+    writeln('trying to decompress anyway');
+    startsat := 0;
+    size := d;
+  end;
+
+  //init zflate
+  if not zinflateinit(z) then begin
+    writeln('could not init zflate');
+    exit;
+  end;
+
+  //decompress deflated stream
+  if zinflatewrite(z, @s[1+startsat], size, true) then begin
+    writeln('decompressed data, size = ', z.bytesavailable);
+    writeln('decompressed contents = "', pchar(@z.buffer[0]), '"');
+  end else begin
+    writeln('could NOT decompress data!');
+  end;
+end;
+
+procedure demo4;
+var
+  s: string;
+begin
+  s := 'php_gzdeflate';   
+  writeln('attempting to decompress "', s, '" file');
+  decompess_file(s);
+  writeln;
+
+  s := 'php_gzcompress';
+  writeln('attempting to decompress "', s, '" file');
+  decompess_file(s);
+  writeln;
+
+  s := 'php_gzencode';
+  writeln('attempting to decompress "', s, '" file');
+  decompess_file(s);
+  writeln;
+
+  writeln('done demo 4');
+end;
+
 begin
   try
     demo1; writeln;
     demo2; writeln;
     demo3; writeln;
+    demo4; writeln;
   finally
     readln;
   end;
