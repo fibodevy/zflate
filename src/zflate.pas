@@ -72,6 +72,7 @@ const
   ZFLATE_EGZIPINVALID = 110; //'invalid gzip header'
   ZFLATE_ECHECKSUM    = 112; //'invalid checksum'
   ZFLATE_EOUTPUTSIZE  = 113; //'output size doesnt match original file size'
+  ZFLATE_EABORTED     = 114; //'aborted'
 
 var
   zchunkmaxsize: dword = 1024*128; //128 KB max chunk size
@@ -725,6 +726,7 @@ begin
     ZFLATE_EGZIPINVALID: result := 'invalid gzip header';
     ZFLATE_ECHECKSUM   : result := 'invalid checksum';
     ZFLATE_EOUTPUTSIZE : result := 'output size doesnt match original file size';
+    ZFLATE_EABORTED    : result := 'aborted';
   end;
   {$else}
   system.Str(code, result);
