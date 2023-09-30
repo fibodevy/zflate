@@ -357,7 +357,7 @@ var
   p, chunksize: dword;
 begin
   result := false;
-  if not zdeflateinit(z) then exit(zerror(z, ZFLATE_EINFLATEINIT));
+  if not zdeflateinit(z, level) then exit(zerror(z, ZFLATE_EINFLATEINIT));
 
   output := nil;
   outputsize := 0;
