@@ -511,6 +511,7 @@ begin
   if not gzcompress(@str[1], length(str), p, d, level) then exit;
   setlength(result, d);
   move(p^, result[1], d);
+  freemem(p);
 end;
 
 // -- ZLIB decompress ---------------------
@@ -680,7 +681,6 @@ begin
 
   if not zfindstream(data, size, streamtype, startsat, streamsize) then begin
     //stream not found, assume its pure deflate
-    streamtype := 0;
     startsat := 0;    
     streamsize := size;
   end;
