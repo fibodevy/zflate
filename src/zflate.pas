@@ -158,9 +158,9 @@ end;
 
 function zdeflateinit(var z: tzflate; level: dword=9; buffersize: dword=0): boolean;
 begin
-  result := false;
-  if buffersize = 0 then buffersize := zbuffersize;
+  result := false;         
   zlasterror := 0;
+  if buffersize = 0 then buffersize := zbuffersize;
   fillchar(z, sizeof(z), 0);
   setlength(z.buffer, buffersize);
   if deflateInit2(z.z, level, Z_DEFLATED, -MAX_WBITS, DEF_MEM_LEVEL, 0) <> Z_OK then exit;
@@ -206,9 +206,9 @@ end;
 
 function zinflateinit(var z: tzflate; buffersize: dword=0): boolean;
 begin
-  result := false;   
-  if buffersize = 0 then buffersize := zbuffersize;
+  result := false;      
   zlasterror := 0;
+  if buffersize = 0 then buffersize := zbuffersize;
   fillchar(z, sizeof(z), 0);
   setlength(z.buffer, buffersize);
   if inflateInit2(z.z, -MAX_WBITS) <> Z_OK then exit;
@@ -525,13 +525,13 @@ begin
   result := false;
   if not zreadzlibheader(data, zlib) then exit(zerror(z, ZFLATE_EZLIBINVALID));
 
-  checksum := pdword(data+size-4)^;
+  checksum := swapendian(pdword(data+size-4)^);
 
   data += zlib.streamat;
   size -= zlib.streamat+zlib.footerlen;
   if not gzinflate(data, size, output, outputsize) then exit;
 
-  if swapendian(adler32(adler32(0, nil, 0), output, outputsize)) <> checksum then exit(zerror(z, ZFLATE_ECHECKSUM));
+  if adler32(adler32(0, nil, 0), output, outputsize) <> checksum then exit(zerror(z, ZFLATE_ECHECKSUM));
 
   result := true;
 end;
