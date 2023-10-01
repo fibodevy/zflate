@@ -5,20 +5,10 @@ This unit allows you to easily compress and decompress buffers and strings like 
 - compiled demo is ~80 kB in size
 - adding unit to uses section increases binary size by ~45 kB, even less if you already use zlib units for other things
 
-### Compression
-| Function | Format | Status |
-|-|-|-|
-| gzdeflate() | DEFLATE | ✔ |
-| gzcompress() | ZLIB | ✔ |
-| gzencode() | GZIP | ✔ |
-
-### Decompression
-| Function | Format | Status |
-|-|-|-|
-| gzinflate() | DEFLATE | ✔ |
-| gzuncompress() | ZLIB | ✔ |
-| gzdecode() | GZIP | ✔ |
-| zdecompress() | ANY | ✔ |
+### Status
+|Compression|Decompression|
+|--|--|
+|<table><tr><th>Function</th><th>Format</th><th>Status</th></tr><tr><td>gzdeflate()</td><td>DEFLATE</td><td>✔</td></tr><tr><td>gzcompress()</td><td>ZLIB</td><td>✔</td></tr><tr><td>gzencode()</td><td>GZIP</td><td>✔</td></tr></table>|<table><tr><th>Function</th><th>Format</th><th>Status</th></tr><tr><td>gzinflate()</td><td>DEFLATE</td><td>✔</td></tr><tr><td>gzuncompress()</td><td>ZLIB</td><td>✔</td></tr><tr><td>gzdecode()</td><td>GZIP</td><td>✔</td></tr><tr><td>zdecompress()</td><td>ANY</td><td>✔</td></tr></table>|
 
 ## Usage
 ```pascal
@@ -67,3 +57,23 @@ function zdecompress(data: pointer; size: dword; var output: pointer; var output
 //try to detect string format and decompress it at once
 function zdecompress(str: string): string;
 ```
+
+## zflatefiles
+
+Additional unit to handle bigger files. Read & write & compress/decompress by chunks.
+
+### Status
+|Compression|Decompression|
+|--|--|
+|<table><tr><th>Function</th><th>Format</th><th>Status</th></tr><tr><td>gzdeflate_file()</td><td>DEFLATE</td><td>❌</td></tr><tr><td>gzcompress_file()</td><td>ZLIB</td><td>❌</td></tr><tr><td>gzencode_file()</td><td>GZIP</td><td>✔</td></tr></table>|<table><tr><th>Function</th><th>Format</th><th>Status</th></tr><tr><td>gzinflate_file()</td><td>DEFLATE</td><td>❌</td></tr><tr><td>gzuncompress_file()</td><td>ZLIB</td><td>❌</td></tr><tr><td>gzdecode_file()</td><td>GZIP</td><td>✔</td></tr></table>|
+
+## Functions
+
+```pascal
+//compress a file to GZIP
+function gzencode_file(src, dst: string; level: dword=9; filename: string=''; comment: string=''; progresscb: tzprogresscb=nil; resolution: dword=100): boolean;
+//decompress a GZIP file
+function gzdecode_file(src, dst: string; progresscb: tzprogresscb=nil; resolution: dword=100): boolean;  
+```
+
+A callback may be provided to these functions. Callback function may abort ongoing operation by returning false.
