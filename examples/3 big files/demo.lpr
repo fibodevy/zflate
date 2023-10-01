@@ -7,7 +7,7 @@ var
   pc: dword;
 begin
   pc := trunc(position/totalsize*100);
-  writeln('progress = ', pc, '% , position = ', position, ', totalsize = ', totalsize, ', outsize = ', outputsize);
+  writeln('progress = ', pc, '%, position = ', position, ', totalsize = ', totalsize, ', ouputtsize = ', outputsize);
 
   //return true to continue
   result := true;
