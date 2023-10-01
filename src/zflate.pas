@@ -75,18 +75,20 @@ const
   ZFLATE_EABORTED     = 114; //'aborted'
 
 var
-  zchunkmaxsize: dword = 1024*128; //128 KB max chunk size
+  zchunkmaxsize: dword = 1024*128; //128 KB default max chunk size
   zbuffersize: dword = 1024*1024*4; //4 MB default buffer size
 
 threadvar
   zlasterror: integer;
 
-//deflate chunks
+//initialize zdeflate
 function zdeflateinit(var z: tzflate; level: dword=9; buffersize: dword=0): boolean;
+//deflate chunk
 function zdeflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 
-//inflate chunks
+//initialize zinflate
 function zinflateinit(var z: tzflate; buffersize: dword=0): boolean;
+//inflate chunk
 function zinflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 
 //read zlib header
@@ -95,7 +97,7 @@ function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
 function zreadgzipheader(data: pointer; var info: tgzipinfo): boolean;
 //get stream basic info; by reading just few first bytes you will know the stream type, where is deflate start and how many bytes are trailing bytes (footer)
 function zstreambasicinfo(data: pointer; var streamtype: dword; var startsat: dword; var trailing: dword): boolean;
-//find out where deflate stream starts and what is its size
+//find out stream type, where deflate stream starts and what is its size
 function zfindstream(data: pointer; size: dword; var streamtype: dword; var startsat: dword; var streamsize: dword): boolean;
 
 //compress whole buffer to DEFLATE at once
