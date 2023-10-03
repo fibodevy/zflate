@@ -70,9 +70,9 @@ const
   ZFLATE_EINFLATEINIT = 108; //'inflate init failed'
   ZFLATE_EZLIBINVALID = 109; //'invalid zlib header'
   ZFLATE_EGZIPINVALID = 110; //'invalid gzip header'
-  ZFLATE_ECHECKSUM    = 112; //'invalid checksum'
-  ZFLATE_EOUTPUTSIZE  = 113; //'output size doesnt match original file size'
-  ZFLATE_EABORTED     = 114; //'aborted'
+  ZFLATE_ECHECKSUM    = 111; //'invalid checksum'
+  ZFLATE_EOUTPUTSIZE  = 112; //'output size doesnt match original file size'
+  ZFLATE_EABORTED     = 113; //'aborted'
 
 var
   zchunkmaxsize: dword = 1024*128; //128 KB default max chunk size
@@ -360,7 +360,7 @@ var
   p, chunksize: dword;
 begin
   result := false;
-  if not zdeflateinit(z, level) then exit(zerror(z, ZFLATE_EINFLATEINIT));
+  if not zdeflateinit(z, level) then exit(zerror(z, ZFLATE_EDEFLATEINIT));
 
   output := nil;
   outputsize := 0;
