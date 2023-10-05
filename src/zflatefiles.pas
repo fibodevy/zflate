@@ -114,7 +114,7 @@ begin
     end;
 
     //write footer
-    footer := makegzipfooter(FileSize(inpt), crc);
+    footer := makegzipfooter(fsize, crc);
     BlockWrite(outp, footer[1], length(footer));
     inc(outsize, length(footer));
 
@@ -165,6 +165,8 @@ begin
     exit;
   end;
 
+  fsize := FileSize(inpt);
+
   try
     //read header
     setlength(header, 512);
@@ -172,17 +174,14 @@ begin
     if not zreadgzipheader(@header[1], gzip) then exit;
 
     //read footer
-    Seek(inpt, FileSize(inpt)-8);
+    Seek(inpt, fsize-8);
     setlength(footer, 8);
     BlockRead(inpt, footer[1], 8);
-
     checksum := pdword(@footer[1])^;
     originalsize := pdword(@footer[1+4])^;
 
-    fsize := FileSize(inpt);
     outsize := 0;
     pos := 0;
-
     streamsize := fsize-gzip.streamat-gzip.footerlen;
 
     Seek(inpt, gzip.streamat);
