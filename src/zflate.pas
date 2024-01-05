@@ -577,7 +577,7 @@ var
   d: dword;
 begin
   result := nil;
-  if not gzuncompress(@bytes[0], length(str), p, d) then exit;
+  if not gzuncompress(@bytes[0], length(bytes), p, d) then exit;
   try
     setlength(result, d);
     move(p^, result[0], d);
