@@ -31,7 +31,8 @@ unit zflate;
 
 interface
 
-uses ZBase, ZInflate, ZDeflate;
+uses
+  SysUtils, ZBase, ZInflate, ZDeflate;
 
 type
   tzflate = record
@@ -121,6 +122,10 @@ function gzcompress(str: string; level: dword=9): string;
 function gzuncompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 //dempress whole ZLIB string at once
 function gzuncompress(str: string): string;
+//compress whole buffer to ZLIB at once
+function gzcompress(bytes : TBytes; level: dword=9) : TBytes;
+//dempress whole ZLIB buffer at once
+function gzuncompress(bytes : TBytes) : TBytes;
 
 //make GZIP header
 function makegzipheader(compressionlevel: integer; filename: string=''; comment: string=''): string;
@@ -517,6 +522,21 @@ begin
   freemem(p);
 end;
 
+function gzcompress(bytes : TBytes; level: dword=9) : TBytes;  
+var
+  p: pointer;
+  d: dword;
+begin
+  result := nil;
+  if not gzcompress(@bytes[0], length(bytes), p, d, level) then exit;
+  try
+    setlength(result, d);
+    move(p^, result[0], d);
+  finally
+    freemem(p);
+  end;
+end;
+
 // -- ZLIB decompress ---------------------
 
 function gzuncompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
@@ -550,6 +570,22 @@ begin
   move(p^, result[1], d);
   freemem(p);
 end;
+
+function gzuncompress(bytes : TBytes) : TBytes;
+var
+  p: pointer;
+  d: dword;
+begin
+  result := nil;
+  if not gzuncompress(@bytes[0], length(str), p, d) then exit;
+  try
+    setlength(result, d);
+    move(p^, result[0], d);
+  finally
+    freemem(p);
+  end;
+end;
+
 
 // -- GZIP compress -----------------------
 
@@ -816,4 +852,3 @@ begin
 end;
 
 end.
-
