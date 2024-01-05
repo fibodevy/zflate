@@ -56,6 +56,8 @@ type
     footerlen: dword;
   end;
 
+  Tristate = (tNull, tTrue, tFalse);
+
 const
   ZFLATE_ZLIB = 1;
   ZFLATE_GZIP = 2;
@@ -118,14 +120,14 @@ function makezlibfooter(adler: dword): string;
 function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
 //compress whole string to ZLIB at once
 function gzcompress(str: string; level: dword=9): string;
-//dempress whole ZLIB buffer at once
-function gzuncompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+//dempress whole ZLIB buffer at once    !
+function gzuncompress(data: pointer; size: dword; readHeader : Tristate; var output: pointer; var outputsize: dword): boolean;
 //dempress whole ZLIB string at once
 function gzuncompress(str: string): string;
 //compress whole buffer to ZLIB at once
 function gzcompress(bytes : TBytes; level: dword=9) : TBytes;
 //dempress whole ZLIB buffer at once
-function gzuncompress(bytes : TBytes) : TBytes;
+function gzuncompress(bytes : TBytes; readHeader : Tristate = tNull) : TBytes;
 
 //make GZIP header
 function makegzipheader(compressionlevel: integer; filename: string=''; comment: string=''): string;
@@ -260,6 +262,9 @@ end;
 
 function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
 begin
+  info.footerlen := 0;
+  info.streamat := 0;
+
   result := false;
   try
     fillchar(info, sizeof(info), 0);
@@ -539,14 +544,20 @@ end;
 
 // -- ZLIB decompress ---------------------
 
-function gzuncompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
+function gzuncompress(data: pointer; size: dword; readHeader : Tristate; var output: pointer; var outputsize: dword): boolean;
 var
   zlib: tzlibinfo;
   z: tzflate;
   checksum: dword;
+  header : boolean;
 begin
   result := false;
-  if not zreadzlibheader(data, zlib) then exit(zerror(z, ZFLATE_EZLIBINVALID));
+  header := false;
+  if readHeader <> tFalse then
+    if zreadzlibheader(data, zlib) then
+      header := true
+    else if readHeader = tTrue then
+      exit(zerror(z, ZFLATE_EZLIBINVALID));
 
   checksum := swapendian(pdword(data+size-4)^);
 
@@ -554,7 +565,8 @@ begin
   size -= zlib.streamat+zlib.footerlen;
   if not gzinflate(data, size, output, outputsize) then exit;
 
-  if adler32(adler32(0, nil, 0), output, outputsize) <> checksum then exit(zerror(z, ZFLATE_ECHECKSUM));
+  if header and (adler32(adler32(0, nil, 0), output, outputsize) <> checksum) then
+    exit(zerror(z, ZFLATE_ECHECKSUM));
 
   result := true;
 end;
@@ -565,19 +577,19 @@ var
   d: dword;
 begin
   result := '';
-  if not gzuncompress(@str[1], length(str), p, d) then exit;
+  if not gzuncompress(@str[1], length(str), tTrue, p, d) then exit;
   setlength(result, d);
   move(p^, result[1], d);
   freemem(p);
 end;
 
-function gzuncompress(bytes : TBytes) : TBytes;
+function gzuncompress(bytes : TBytes; readHeader : Tristate = tNull) : TBytes;
 var
   p: pointer;
   d: dword;
 begin
   result := nil;
-  if not gzuncompress(@bytes[0], length(bytes), p, d) then exit;
+  if not gzuncompress(@bytes[0], length(bytes), readHeader, p, d) then exit;
   try
     setlength(result, d);
     move(p^, result[0], d);
