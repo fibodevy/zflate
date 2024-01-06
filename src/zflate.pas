@@ -78,7 +78,7 @@ const
 
 var
   zchunkmaxsize: dword = 1024*128; //128 KB default max chunk size
-  zbuffersize: dword = 1024*1024*16; //16 MB default buffer size
+  zbuffersize: dword = 1024*1024*64; //64 MB default buffer size
 
 threadvar
   zlasterror: integer;
@@ -388,15 +388,18 @@ begin
     if chunksize > zchunkmaxsize then chunksize := zchunkmaxsize;
     //deflate
     if not zdeflatewrite(z, data, chunksize, chunksize<zchunkmaxsize) then exit; //might be ZFLATE_EBUFFER = buffer too small
-    //alloc mem for output
-    if output = nil then output := getmem(z.bytesavailable)
-    else output := reallocmem(output, outputsize+z.bytesavailable);
-    //move buffer to output
-    move(z.buffer[0], (output+p)^, z.bytesavailable);
-    //increase output position
-    inc(p, z.bytesavailable);
-    //increase output size
-    inc(outputsize, z.bytesavailable);
+    //if we get some compressed data (it may not be flushed yet)
+    if z.bytesavailable > 0 then begin
+      //alloc mem for output
+      if output = nil then output := getmem(z.bytesavailable)
+      else output := reallocmem(output, outputsize+z.bytesavailable);
+      //move buffer to output
+      move(z.buffer[0], (output+p)^, z.bytesavailable);
+      //increase output position
+      inc(p, z.bytesavailable);
+      //increase output size
+      inc(outputsize, z.bytesavailable);
+    end;
     //increase data pointer
     inc(data, chunksize);
     //how much data left
@@ -450,15 +453,18 @@ begin
     if chunksize > zchunkmaxsize then chunksize := zchunkmaxsize;
     //inflate
     if not zinflatewrite(z, data, chunksize, chunksize<zchunkmaxsize) then exit; //might be ZFLATE_EBUFFER = buffer too small
-    //alloc mem for output
-    if output = nil then output := getmem(z.bytesavailable)
-    else output := reallocmem(output, outputsize+z.bytesavailable);
-    //move buffer to output
-    move(z.buffer[0], (output+p)^, z.bytesavailable);
-    //increase output position
-    inc(p, z.bytesavailable);
-    //increase output size
-    inc(outputsize, z.bytesavailable);
+    //if we get some decompressed data (it may not be flushed yet)
+    if z.bytesavailable > 0 then begin
+      //alloc mem for output
+      if output = nil then output := getmem(z.bytesavailable)
+      else output := reallocmem(output, outputsize+z.bytesavailable);
+      //move buffer to output
+      move(z.buffer[0], (output+p)^, z.bytesavailable);
+      //increase output position
+      inc(p, z.bytesavailable);
+      //increase output size
+      inc(outputsize, z.bytesavailable);
+    end;
     //increase data pointer
     inc(data, chunksize);
     //how much data left
