@@ -25,9 +25,9 @@ unit zflate;
 
 {$mode ObjFPC}{$H+}
 
-//comment out to disable error translation
-//if disabled, zflatetranslatecode will return error code as string
-{$define zflate_error_translation}
+// comment out to disable error translation
+// if disabled, zflatetranslatecode will return error code as string
+{$define ZFLATE_ERROR_TRANSLATION}
 
 interface
 
@@ -62,106 +62,106 @@ const
   ZFLATE_GZIP = 2;
 
   ZFLATE_OK           = 0;
-  ZFLATE_ECHUNKTOOBIG = 101; //'chunk is too big'
-  ZFLATE_EBUFFER      = 102; //'buffer too small'
-  ZFLATE_ESTREAM      = 103; //'stream error'
-  ZFLATE_EDATA        = 104; //'data error'
-  ZFLATE_EDEFLATE     = 105; //'deflate error'
-  ZFLATE_EINFLATE     = 106; //'inflate error'
-  ZFLATE_EDEFLATEINIT = 107; //'deflate init failed'
-  ZFLATE_EINFLATEINIT = 108; //'inflate init failed'
-  ZFLATE_EZLIBINVALID = 109; //'invalid zlib header'
-  ZFLATE_EGZIPINVALID = 110; //'invalid gzip header'
-  ZFLATE_ECHECKSUM    = 111; //'invalid checksum'
-  ZFLATE_EOUTPUTSIZE  = 112; //'output size doesnt match original file size'
-  ZFLATE_EABORTED     = 113; //'aborted'
+  ZFLATE_ECHUNKTOOBIG = 101; // 'chunk is too big'
+  ZFLATE_EBUFFER      = 102; // 'buffer too small'
+  ZFLATE_ESTREAM      = 103; // 'stream error'
+  ZFLATE_EDATA        = 104; // 'data error'
+  ZFLATE_EDEFLATE     = 105; // 'deflate error'
+  ZFLATE_EINFLATE     = 106; // 'inflate error'
+  ZFLATE_EDEFLATEINIT = 107; // 'deflate init failed'
+  ZFLATE_EINFLATEINIT = 108; // 'inflate init failed'
+  ZFLATE_EZLIBINVALID = 109; // 'invalid zlib header'
+  ZFLATE_EGZIPINVALID = 110; // 'invalid gzip header'
+  ZFLATE_ECHECKSUM    = 111; // 'invalid checksum'
+  ZFLATE_EOUTPUTSIZE  = 112; // 'output size doesnt match original file size'
+  ZFLATE_EABORTED     = 113; // 'aborted'
 
 var
-  zchunkmaxsize: dword = 1024*128; //128 KB default max chunk size
-  zbuffersize: dword = 1024*1024*64; //64 MB default buffer size
+  zchunkmaxsize: dword = 1024*128;   // 128 KB default max chunk size
+  zbuffersize: dword = 1024*1024*64; // 64 MB default buffer size
 
 threadvar
   zlasterror: integer;
 
-//initialize zdeflate
+// initialize zdeflate
 function zdeflateinit(var z: tzflate; level: dword=9; buffersize: dword=0): boolean;
-//deflate chunk
+// deflate chunk
 function zdeflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 
-//initialize zinflate
+// initialize zinflate
 function zinflateinit(var z: tzflate; buffersize: dword=0): boolean;
-//inflate chunk
+// inflate chunk
 function zinflatewrite(var z: tzflate; data: pointer; size: dword; lastchunk: boolean=false): boolean;
 
-//read zlib header
+// read zlib header
 function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
-//read gzip header
+// read gzip header
 function zreadgzipheader(data: pointer; var info: tgzipinfo): boolean;
-//get stream basic info; by reading just few first bytes you will know the stream type, where is deflate start and how many bytes are trailing bytes (footer)
+// get stream basic info; by reading just few first bytes you will know the stream type, where is deflate start and how many bytes are trailing bytes (footer)
 function zstreambasicinfo(data: pointer; var streamtype: dword; var startsat: dword; var trailing: dword): boolean;
-//find out stream type, where deflate stream starts and what is its size
+// find out stream type, where deflate stream starts and what is its size
 function zfindstream(data: pointer; size: dword; var streamtype: dword; var startsat: dword; var streamsize: dword): boolean;
 
-//compress whole buffer to DEFLATE at once
+// compress whole buffer to DEFLATE at once
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
-//compress whole string to DEFLATE at once
+// compress whole string to DEFLATE at once
 function gzdeflate(str: string; level: dword=9): string;
-//compress whole bytes to DEFLATE at once
+// compress whole bytes to DEFLATE at once
 function gzdeflate(bytes: TBytes; level: dword=9): TBytes;
-//decompress whole DEFLATE buffer at once
+// decompress whole DEFLATE buffer at once
 function gzinflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
-//decompress whole DEFLATE string at once
+// decompress whole DEFLATE string at once
 function gzinflate(str: string): string;
-//decompress whole DEFLATE bytes at once
+// decompress whole DEFLATE bytes at once
 function gzinflate(bytes: TBytes): TBytes;
 
-//make ZLIB header
+// make ZLIB header
 function makezlibheader(compressionlevel: integer): string;
-//make ZLIB footer
+// make ZLIB footer
 function makezlibfooter(adler: dword): string;
-//compress whole buffer to ZLIB at once
+// compress whole buffer to ZLIB at once
 function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
-//compress whole string to ZLIB at once
+// compress whole string to ZLIB at once
 function gzcompress(str: string; level: dword=9): string;
-//compress whole buffer to ZLIB at once
+// compress whole buffer to ZLIB at once
 function gzcompress(bytes: TBytes; level: dword=9): TBytes;
-//decompress whole ZLIB buffer at once
+// decompress whole ZLIB buffer at once
 function gzuncompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
-//decompress whole ZLIB string at once
+// decompress whole ZLIB string at once
 function gzuncompress(str: string): string;
-//decompress whole ZLIB buffer at once
+// decompress whole ZLIB buffer at once
 function gzuncompress(bytes: TBytes): TBytes;
 
-//make GZIP header
+// make GZIP header
 function makegzipheader(compressionlevel: integer; filename: string=''; comment: string=''): string;
-//make GZIP footer
+// make GZIP footer
 function makegzipfooter(originalsize: dword; crc: dword): string;
-//compress whole buffer to GZIP at once
+// compress whole buffer to GZIP at once
 function gzencode(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9; filename: string=''; comment: string=''): boolean;
-//compress whole string to GZIP at once
+// compress whole string to GZIP at once
 function gzencode(str: string; level: dword=9; filename: string=''; comment: string=''): string;
-//compress whole string to GZIP at once
+// compress whole string to GZIP at once
 function gzencode(bytes: TBytes; level: dword=9; filename: string=''; comment: string=''): TBytes;
-//decompress whole GZIP buffer at once
+// decompress whole GZIP buffer at once
 function gzdecode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
-//decompress whole GZIP string at once
+// decompress whole GZIP string at once
 function gzdecode(str: string): string;
-//decompress whole GZIP string at once
+// decompress whole GZIP string at once
 function gzdecode(bytes: TBytes): TBytes;
 
-//try to detect buffer format and decompress it at once
+// try to detect buffer format and decompress it at once
 function zdecompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
-//try to detect string format and decompress it at once
+// try to detect string format and decompress it at once
 function zdecompress(str: string): string;
-//try to detect bytes format and decompress it at once
+// try to detect bytes format and decompress it at once
 function zdecompress(bytes: TBytes): TBytes;
 
-//transalte error code to message
+// transalte error code to message
 function zflatetranslatecode(code: integer): string;
 
-//compute crc32b checksum
+// compute crc32b checksum
 function crc32b(crc: dword; buf: pbyte; len: dword): dword;
-//compute adler32 checksum
+// compute adler32 checksum
 function adler32(adler: dword; buf: pbyte; len: dword): dword;
 
 implementation
@@ -204,7 +204,7 @@ begin
   else
     i := deflate(z.z, Z_NO_FLUSH);
 
-  if i = Z_BUF_ERROR then exit(zerror(z, ZFLATE_EBUFFER)); //buffer too small
+  if i = Z_BUF_ERROR then exit(zerror(z, ZFLATE_EBUFFER)); // buffer too small
   if i = Z_STREAM_ERROR then exit(zerror(z, ZFLATE_ESTREAM));
   if i = Z_DATA_ERROR then exit(zerror(z, ZFLATE_EDATA));
 
@@ -252,7 +252,7 @@ begin
   else
     i := inflate(z.z, Z_NO_FLUSH);
 
-  if i = Z_BUF_ERROR then exit(zerror(z, ZFLATE_EBUFFER)); //buffer too small
+  if i = Z_BUF_ERROR then exit(zerror(z, ZFLATE_EBUFFER)); // buffer too small
   if i = Z_STREAM_ERROR then exit(zerror(z, ZFLATE_ESTREAM));
   if i = Z_DATA_ERROR then exit(zerror(z, ZFLATE_EDATA));
 
@@ -268,6 +268,8 @@ begin
     result := i = Z_OK;
   end;
 end;
+
+// -- headers rountines ------------------
 
 function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
 var
@@ -300,41 +302,32 @@ begin
   try
     fillchar(info, sizeof(info), 0);
     if not ((pbyte(data)^ = $1f) and (pbyte(data+1)^ = $8b)) then exit;
-
     info.footerlen := 8;
-
-    //mod time
+    // mod time
     move((data+4)^, info.modtime, 4);
-
-    //stream position
+    //s tream position
     info.streamat := 10;
-
-    //flags
+    // flags
     flags := pbyte(data+3)^;
-
-    //extra
+    // extra
     if (flags and $04) <> 0 then begin
       w := pword(data+info.streamat)^;
       info.streamat += 2+w;
     end;
-
-    //filename
+    // filename
     if (flags and $08) <> 0 then begin
       info.filename := pchar(data+info.streamat);
       info.streamat += length(info.filename)+1;
     end;
-
-    //comment
+    // comment
     if (flags and $10) <> 0 then begin
       info.comment := pchar(data+info.streamat);
       info.streamat += length(info.comment)+1;
     end;
-
-    //crc16?
+    // crc16 of the header, skip
     if (flags and $02) <> 0 then begin
       info.streamat += 2;
     end;
-
     result := true;
   except
   end;
@@ -351,14 +344,14 @@ begin
   if zreadzlibheader(data, zlib) then begin
     streamtype := ZFLATE_ZLIB;
     startsat := zlib.streamat;
-    trailing := 4; //footer: adler32
+    trailing := 4; // footer: adler32
     exit(true);
   end;
 
   if zreadgzipheader(data, gzip) then begin
     streamtype := ZFLATE_GZIP;
     startsat := gzip.streamat;
-    trailing := 8; //footer: crc32 + original file size
+    trailing := 8; // footer: crc32 + original file size
     exit(true);
   end;
 end;
@@ -369,7 +362,7 @@ var
 begin
   result := false;
 
-  if size < 6 then exit; //6 bytes is minimum for ZLIB, 18 for GZIP
+  if size < 6 then exit; // 6 bytes is minimum for ZLIB, 18 for GZIP
 
   if zstreambasicinfo(data, streamtype, startsat, trailing) then begin
     streamsize := size-startsat-trailing;
@@ -425,9 +418,12 @@ var
 begin
   result := '';
   if not gzdeflate(@str[1], length(str), p, d, level) then exit;
-  setlength(result, d);
-  move(p^, result[1], d);
-  freemem(p);
+  try    
+    setlength(result, d);
+    move(p^, result[1], d);
+  finally  
+    freemem(p);
+  end;
 end;
 
 function gzdeflate(bytes: TBytes; level: dword=9): TBytes;
@@ -437,9 +433,12 @@ var
 begin
   result := nil;
   if not gzdeflate(@bytes[0], length(bytes), p, d, level) then exit;
-  setlength(result, d);
-  move(p^, result[0], d);
-  freemem(p);
+  try
+    setlength(result, d);
+    move(p^, result[0], d);
+  finally     
+    freemem(p);
+  end;
 end;
 
 // -- inflate -----------------------------
@@ -490,9 +489,12 @@ var
 begin
   result := '';
   if not gzinflate(@str[1], length(str), p, d) then exit;
-  setlength(result, d);
-  move(p^, result[1], d);
-  freemem(p);
+  try
+    setlength(result, d);
+    move(p^, result[1], d);
+  finally    
+    freemem(p);
+  end;
 end;
 
 function gzinflate(bytes: TBytes): TBytes;
@@ -502,29 +504,32 @@ var
 begin
   result := nil;
   if not gzinflate(@bytes[0], length(bytes), p, d) then exit;
-  setlength(result, d);
-  move(p^, result[0], d);
-  freemem(p);
+  try  
+    setlength(result, d);
+    move(p^, result[0], d);
+  finally   
+    freemem(p);
+  end;
 end;
 
 // -- ZLIB compress -----------------------
 
 function makezlibheader(compressionlevel: integer): string;
 begin
-  result := #$78;
-
+  setlength(result, 2);
+  result[1] := #$78;
   case compressionlevel of
-    1: result += #$01;
-    2: result += #$5e;
-    3: result += #$5e;
-    4: result += #$5e;
-    5: result += #$5e;
-    6: result += #$9c;
-    7: result += #$da;
-    8: result += #$da;
-    9: result += #$da;
+    1: result[2] := #$01;
+    2: result[2] := #$5e;
+    3: result[2] := #$5e;
+    4: result[2] := #$5e;
+    5: result[2] := #$5e;
+    6: result[2] := #$9c;
+    7: result[2] := #$da;
+    8: result[2] := #$da;
+    9: result[2] := #$da;
   else
-    result += #$da;
+    result[2] := #$da;
   end;
 end;
 
@@ -543,21 +548,24 @@ var
 begin
   result := false;
 
-  header := makezlibheader(level);
-  footer := makezlibfooter(adler32(adler32(0, nil, 0), data, size));
-
   if not gzdeflate(data, size, deflated, deflatedsize, level) then exit;
 
-  outputsize := length(header)+deflatedsize+length(footer);
-  output := getmem(outputsize);
+  try
+    // make header and footer
+    header := makezlibheader(level);
+    footer := makezlibfooter(adler32(adler32(0, nil, 0), data, size));
 
-  move(header[1], output^, length(header));
-  move(deflated^, (output+length(header))^, deflatedsize);
-  move(footer[1], (output+length(header)+deflatedsize)^, length(footer));
+    // construct ZLIB data of header, deflated data and footer
+    outputsize := length(header)+deflatedsize+length(footer);
+    output := getmem(outputsize);
+    move(header[1], output^, length(header));
+    move(deflated^, (output+length(header))^, deflatedsize);
+    move(footer[1], (output+length(header)+deflatedsize)^, length(footer));
 
-  freemem(deflated);
-
-  result := true;
+    result := true;
+  finally 
+    freemem(deflated);
+  end;
 end;
 
 function gzcompress(str: string; level: dword=9): string;
@@ -567,9 +575,12 @@ var
 begin
   result := '';
   if not gzcompress(@str[1], length(str), p, d, level) then exit;
-  setlength(result, d);
-  move(p^, result[1], d);
-  freemem(p);
+  try
+    setlength(result, d);
+    move(p^, result[1], d);
+  finally   
+    freemem(p);
+  end;
 end;
 
 function gzcompress(bytes: TBytes; level: dword=9): TBytes;
@@ -596,6 +607,7 @@ var
   checksum: dword;
 begin
   result := false;
+
   if not zreadzlibheader(data, zlib) then exit(zerror(z, ZFLATE_EZLIBINVALID));
 
   checksum := swapendian(pdword(data+size-4)^);
@@ -616,9 +628,12 @@ var
 begin
   result := '';
   if not gzuncompress(@str[1], length(str), p, d) then exit;
-  setlength(result, d);
-  move(p^, result[1], d);
-  freemem(p);
+  try
+    setlength(result, d);
+    move(p^, result[1], d);
+  finally  
+    freemem(p);
+  end;
 end;
 
 function gzuncompress(bytes: TBytes): TBytes;
@@ -644,32 +659,31 @@ var
   modtime: dword;
 begin
   setlength(result, 10);
-  result[1] := #$1f; //signature
-  result[2] := #$8b; //signature
-  result[3] := #$08; //deflate algo
+  result[1] := #$1f; // magic 1
+  result[2] := #$8b; // magic 2
+  result[3] := #$08; // deflate (8)
 
-  //modification time
+  // modification time
   modtime := 0;
   move(modtime, result[5], 4);
 
-  result[9] := #$00; //compression level
-  if compressionlevel = 9 then result[9] := #$02; //best compression
-  if compressionlevel = 1 then result[9] := #$04; //best speed
+  result[9] := #$00; // compression flags
+  if compressionlevel = 9 then result[9] := #$02; // best compression
+  if compressionlevel = 1 then result[9] := #$04; // best speed
 
-  result[10] := #$FF; //file system (00 = FAT?)
-  //result[10] := #$00;
+  result[10] := #$FF; // file system (0 = FAT, FF = unknown)
 
-  //optional headers
+  // extra fields flags
   flags := 0;
 
-  //filename
+  // filename
   if filename <> '' then begin
     flags := flags or $08;
     result += filename;
     result += #$00;
   end;
 
-  //comment
+  // comment
   if comment <> '' then begin
     flags := flags or $10;
     result += comment;
@@ -694,21 +708,24 @@ var
 begin
   result := false;
 
-  header := makegzipheader(level, filename, comment);
-  footer := makegzipfooter(size, crc32b(0, data, size));
-
   if not gzdeflate(data, size, deflated, deflatedsize, level) then exit;
 
-  outputsize := length(header)+deflatedsize+length(footer);
-  output := getmem(outputsize);
+  try
+    // make header and footer
+    header := makegzipheader(level, filename, comment);
+    footer := makegzipfooter(size, crc32b(0, data, size));
 
-  move(header[1], output^, length(header));
-  move(deflated^, (output+length(header))^, deflatedsize);
-  move(footer[1], (output+length(header)+deflatedsize)^, length(footer));
+    // construct GZIP data of header, deflated data and footer
+    outputsize := length(header)+deflatedsize+length(footer);
+    output := getmem(outputsize);
+    move(header[1], output^, length(header));
+    move(deflated^, (output+length(header))^, deflatedsize);
+    move(footer[1], (output+length(header)+deflatedsize)^, length(footer));
 
-  freemem(deflated);
-
-  result := true;
+    result := true;
+  finally   
+    freemem(deflated);
+  end;
 end;
 
 function gzencode(str: string; level: dword=9; filename: string=''; comment: string=''): string;
@@ -718,9 +735,12 @@ var
 begin
   result := '';
   if not gzencode(@str[1], length(str), p, d, level, filename, comment) then exit;
-  setlength(result, d);
-  move(p^, result[1], d);
-  freemem(p);
+  try
+    setlength(result, d);
+    move(p^, result[1], d);
+  finally   
+    freemem(p);
+  end;
 end;
 
 function gzencode(bytes: TBytes; level: dword=9; filename: string=''; comment: string=''): TBytes;
@@ -730,9 +750,12 @@ var
 begin
   result := nil;
   if not gzencode(@bytes[0], length(bytes), p, d, level, filename, comment) then exit;
-  setlength(result, d);
-  move(p^, result[0], d);
-  freemem(p);
+  try
+    setlength(result, d);
+    move(p^, result[0], d);
+  finally    
+    freemem(p);
+  end;
 end;
 
 // -- GZIP decompress ---------------------
@@ -744,6 +767,7 @@ var
   originalsize, checksum: dword;
 begin
   result := false;
+
   if not zreadgzipheader(data, gzip) then exit(zerror(z, ZFLATE_EGZIPINVALID));
 
   originalsize := pdword(data+size-4)^;
@@ -766,9 +790,12 @@ var
 begin
   result := '';
   if not gzdecode(@str[1], length(str), p, d) then exit;
-  setlength(result, d);
-  move(p^, result[1], d);
-  freemem(p);
+  try
+    setlength(result, d);
+    move(p^, result[1], d);
+  finally   
+    freemem(p);
+  end;
 end;
 
 function gzdecode(bytes: TBytes): TBytes;
@@ -778,9 +805,12 @@ var
 begin
   result := nil;
   if not gzdecode(@bytes[0], length(bytes), p, d) then exit;
-  setlength(result, d);
-  move(p^, result[0], d);
-  freemem(p);
+  try
+    setlength(result, d);
+    move(p^, result[0], d);
+  finally  
+    freemem(p);
+  end;
 end;
 
 // -- decompress anything -----------------
@@ -792,7 +822,7 @@ begin
   result := false;
 
   if not zfindstream(data, size, streamtype, startsat, streamsize) then begin
-    //stream not found, assume its pure deflate
+    // stream not found, assume its pure deflate
     startsat := 0;
     streamsize := size;
   end;
@@ -809,9 +839,12 @@ var
 begin
   result := '';
   if not zdecompress(@str[1], length(str), p, d) then exit;
-  setlength(result, d);
-  move(p^, result[1], d);
-  freemem(p);
+  try 
+    setlength(result, d);
+    move(p^, result[1], d);
+  finally    
+    freemem(p);
+  end;
 end;
 
 function zdecompress(bytes: TBytes): TBytes;
@@ -821,18 +854,19 @@ var
 begin
   result := nil;
   if not zdecompress(@bytes[0], length(bytes), p, d) then exit;
-  setlength(result, d);
-  move(p^, result[0], d);
-  freemem(p);
+  try
+    setlength(result, d);
+    move(p^, result[0], d);
+  finally  
+    freemem(p);
+  end;
 end;
 
 // -- error translation -------------------
 
 function zflatetranslatecode(code: integer): string;
 begin
-  {$ifdef zflate_error_translation}
-  result := 'unknown';
-
+  {$ifdef ZFLATE_ERROR_TRANSLATION}
   case code of
     ZFLATE_ZLIB        : result := 'ZLIB';
     ZFLATE_GZIP        : result := 'GZIP';
@@ -850,6 +884,7 @@ begin
     ZFLATE_ECHECKSUM   : result := 'invalid checksum';
     ZFLATE_EOUTPUTSIZE : result := 'output size doesnt match original file size';
     ZFLATE_EABORTED    : result := 'aborted';
+    else                 result := 'unknown';
   end;
   {$else}
   system.Str(code, result);
