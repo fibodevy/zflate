@@ -274,7 +274,16 @@ begin
   result := false;
   try
     fillchar(info, sizeof(info), 0);
-    result := (pbyte(data)^ = $78) and (pbyte(data+1)^ in [$01, $5e, $9c, $da]);
+    result :=
+      // ref: https://stackoverflow.com/questions/9050260/what-does-a-zlib-header-look-like/54915442#54915442
+      {l7}    ((pbyte(data)^ = $78) and (pbyte(data+1)^ in [$01, $5e, $9c, $da]))
+      {l6} or ((pbyte(data)^ = $68) and (pbyte(data+1)^ in [$05, $43, $81, $de]))
+      {l5} or ((pbyte(data)^ = $58) and (pbyte(data+1)^ in [$09, $47, $85, $c3]))
+      {l4} or ((pbyte(data)^ = $48) and (pbyte(data+1)^ in [$0d, $4b, $89, $c7]))
+      {l3} or ((pbyte(data)^ = $38) and (pbyte(data+1)^ in [$11, $4f, $8d, $cb]))
+      {l2} or ((pbyte(data)^ = $28) and (pbyte(data+1)^ in [$15, $53, $91, $cf]))
+      {l1} or ((pbyte(data)^ = $18) and (pbyte(data+1)^ in [$19, $57, $95, $d3]))
+      {l0} or ((pbyte(data)^ = $08) and (pbyte(data+1)^ in [$1d, $5b, $99, $d7]));
     if not result then exit;
     info.footerlen := 4;
     info.streamat := 2;
