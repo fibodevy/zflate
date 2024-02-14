@@ -270,20 +270,20 @@ begin
 end;
 
 function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
+var
+  cinfo, cmethod, flevel, fdict, fcheck: byte;
 begin
   result := false;
   try
     fillchar(info, sizeof(info), 0);
-    result :=
-      // ref: https://stackoverflow.com/questions/9050260/what-does-a-zlib-header-look-like/54915442#54915442
-      {l7}    ((pbyte(data)^ = $78) and (pbyte(data+1)^ in [$01, $5e, $9c, $da]))
-      {l6} or ((pbyte(data)^ = $68) and (pbyte(data+1)^ in [$05, $43, $81, $de]))
-      {l5} or ((pbyte(data)^ = $58) and (pbyte(data+1)^ in [$09, $47, $85, $c3]))
-      {l4} or ((pbyte(data)^ = $48) and (pbyte(data+1)^ in [$0d, $4b, $89, $c7]))
-      {l3} or ((pbyte(data)^ = $38) and (pbyte(data+1)^ in [$11, $4f, $8d, $cb]))
-      {l2} or ((pbyte(data)^ = $28) and (pbyte(data+1)^ in [$15, $53, $91, $cf]))
-      {l1} or ((pbyte(data)^ = $18) and (pbyte(data+1)^ in [$19, $57, $95, $d3]))
-      {l0} or ((pbyte(data)^ = $08) and (pbyte(data+1)^ in [$1d, $5b, $99, $d7]));
+    // ref: https://stackoverflow.com/questions/9050260/what-does-a-zlib-header-look-like/54915442#54915442
+    cinfo   := pbyte(data)^   and %11110000 shr 4; // window size 0-7, usually 7, 2^cinfo*256, 256-32768
+    cmethod := pbyte(data)^   and %00001111;       // method, always 8 (DEFLATE)
+    flevel  := pbyte(data+1)^ and %11000000 shr 6; // level 0-3
+    fdict   := pbyte(data+1)^ and %00100000 shr 5; // dict 0-1, usually 0
+    fcheck  := pbyte(data+1)^ and %00011111;       // check 0-31 (value added so the whole 2 byte header can be validated)
+    result := {validate info} ((cinfo <= 7) and (cmethod = 8) and (flevel <= 3) and (fdict <= 1))
+              {validate checksum} and ((pbyte(data)^*256+pbyte(data+1)^) mod 31 = 0);
     if not result then exit;
     info.footerlen := 4;
     info.streamat := 2;
