@@ -29,33 +29,47 @@ decompressed := zdecompress(compressed);
 function gzdeflate(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
 //compress whole string to DEFLATE at once
 function gzdeflate(str: string; level: dword=9): string;
+//compress whole bytes to DEFLATE at once
+function gzdeflate(bytes: TBytes; level: dword=9): TBytes;
 //decompress whole DEFLATE buffer at once
 function gzinflate(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 //decompress whole DEFLATE string at once
 function gzinflate(str: string): string;
+//decompress whole DEFLATE bytes at once
+function gzinflate(bytes: TBytes): TBytes;     
 
 //compress whole buffer to ZLIB at once
 function gzcompress(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9): boolean;
 //compress whole string to ZLIB at once
 function gzcompress(str: string; level: dword=9): string;
-//dempress whole ZLIB buffer at once
+//compress whole buffer to ZLIB at once
+function gzcompress(bytes: TBytes; level: dword=9): TBytes;
+//decompress whole ZLIB buffer at once
 function gzuncompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
-//dempress whole ZLIB string at once
+//decompress whole ZLIB string at once
 function gzuncompress(str: string): string;
+//decompress whole ZLIB buffer at once
+function gzuncompress(bytes: TBytes): TBytes;
 
 //compress whole buffer to GZIP at once
 function gzencode(data: pointer; size: dword; var output: pointer; var outputsize: dword; level: dword=9; filename: string=''; comment: string=''): boolean;
 //compress whole string to GZIP at once
 function gzencode(str: string; level: dword=9; filename: string=''; comment: string=''): string;
+//compress whole string to GZIP at once
+function gzencode(bytes: TBytes; level: dword=9; filename: string=''; comment: string=''): TBytes;
 //decompress whole GZIP buffer at once
 function gzdecode(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 //decompress whole GZIP string at once
 function gzdecode(str: string): string;
+//decompress whole GZIP string at once
+function gzdecode(bytes: TBytes): TBytes;
 
 //try to detect buffer format and decompress it at once
 function zdecompress(data: pointer; size: dword; var output: pointer; var outputsize: dword): boolean;
 //try to detect string format and decompress it at once
 function zdecompress(str: string): string;
+//try to detect bytes format and decompress it at once
+function zdecompress(bytes: TBytes): TBytes;
 ```
 
 ## zflatefiles
