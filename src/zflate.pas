@@ -384,31 +384,36 @@ begin
   outputsize := 0;
   p := 0;
 
-  //compress
-  while size > 0 do begin
-    chunksize := size;
-    if chunksize > zchunkmaxsize then chunksize := zchunkmaxsize;
-    //deflate
-    if not zdeflatewrite(z, data, chunksize, chunksize<zchunkmaxsize) then exit; //might be ZFLATE_EBUFFER = buffer too small
-    //if we get some compressed data (it may not be flushed yet)
-    if z.bytesavailable > 0 then begin
-      //alloc mem for output
-      if output = nil then output := getmem(z.bytesavailable)
-      else output := reallocmem(output, outputsize+z.bytesavailable);
-      //move buffer to output
-      move(z.buffer[0], (output+p)^, z.bytesavailable);
-      //increase output position
-      inc(p, z.bytesavailable);
-      //increase output size
-      inc(outputsize, z.bytesavailable);
+  try
+    // compress
+    while size > 0 do begin
+      chunksize := size;
+      if chunksize > zchunkmaxsize then chunksize := zchunkmaxsize;
+      // deflate
+      if not zdeflatewrite(z, data, chunksize, chunksize<zchunkmaxsize) then exit; // might be ZFLATE_EBUFFER = buffer too small
+      // if we get some compressed data (it may not be flushed yet)
+      if z.bytesavailable > 0 then begin
+        // alloc mem for output
+        if output = nil then output := getmem(z.bytesavailable)
+        else output := reallocmem(output, outputsize+z.bytesavailable);
+        // move buffer to output
+        move(z.buffer[0], (output+p)^, z.bytesavailable);
+        // increase output position
+        inc(p, z.bytesavailable);
+        // increase output size
+        inc(outputsize, z.bytesavailable);
+      end;
+      // increase data pointer
+      inc(data, chunksize);
+      // how much data left
+      dec(size, chunksize);
     end;
-    //increase data pointer
-    inc(data, chunksize);
-    //how much data left
-    dec(size, chunksize);
-  end;
 
-  result := true;
+    result := true;
+  finally
+    // free mem on failure
+    if not result and (output <> nil) then freemem(output);
+  end;
 end;
 
 function gzdeflate(str: string; level: dword=9): string;
@@ -455,31 +460,36 @@ begin
   outputsize := 0;
   p := 0;
 
-  //decompress
-  while size > 0 do begin
-    chunksize := size;
-    if chunksize > zchunkmaxsize then chunksize := zchunkmaxsize;
-    //inflate
-    if not zinflatewrite(z, data, chunksize, chunksize<zchunkmaxsize) then exit; //might be ZFLATE_EBUFFER = buffer too small
-    //if we get some decompressed data (it may not be flushed yet)
-    if z.bytesavailable > 0 then begin
-      //alloc mem for output
-      if output = nil then output := getmem(z.bytesavailable)
-      else output := reallocmem(output, outputsize+z.bytesavailable);
-      //move buffer to output
-      move(z.buffer[0], (output+p)^, z.bytesavailable);
-      //increase output position
-      inc(p, z.bytesavailable);
-      //increase output size
-      inc(outputsize, z.bytesavailable);
-    end;
-    //increase data pointer
-    inc(data, chunksize);
-    //how much data left
-    dec(size, chunksize);
-  end;
+  try
+    // decompress
+    while size > 0 do begin
+      chunksize := size;
+      if chunksize > zchunkmaxsize then chunksize := zchunkmaxsize;
+      // inflate
+      if not zinflatewrite(z, data, chunksize, chunksize<zchunkmaxsize) then exit; // might be ZFLATE_EBUFFER = buffer too small
+      // if we get some decompressed data (it may not be flushed yet)
+      if z.bytesavailable > 0 then begin
+        // alloc mem for output
+        if output = nil then output := getmem(z.bytesavailable)
+        else output := reallocmem(output, outputsize+z.bytesavailable);
+        // move buffer to output
+        move(z.buffer[0], (output+p)^, z.bytesavailable);
+        // increase output position
+        inc(p, z.bytesavailable);
+        // increase output size
+        inc(outputsize, z.bytesavailable);
+      end;
+      // increase data pointer
+      inc(data, chunksize);
+      // how much data left
+      dec(size, chunksize);
+    end;   
 
-  result := true;
+    result := true;
+  finally
+    // free mem on failure
+    if not result and (output <> nil) then freemem(output);
+  end;
 end;
 
 function gzinflate(str: string): string;
