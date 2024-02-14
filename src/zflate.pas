@@ -390,7 +390,7 @@ begin
       chunksize := size;
       if chunksize > zchunkmaxsize then chunksize := zchunkmaxsize;
       // deflate
-      if not zdeflatewrite(z, data, chunksize, chunksize<zchunkmaxsize) then exit; // might be ZFLATE_EBUFFER = buffer too small
+      if not zdeflatewrite(z, data, chunksize, size-chunksize=0) then exit; // might be ZFLATE_EBUFFER = buffer too small
       // if we get some compressed data (it may not be flushed yet)
       if z.bytesavailable > 0 then begin
         // alloc mem for output
@@ -466,7 +466,7 @@ begin
       chunksize := size;
       if chunksize > zchunkmaxsize then chunksize := zchunkmaxsize;
       // inflate
-      if not zinflatewrite(z, data, chunksize, chunksize<zchunkmaxsize) then exit; // might be ZFLATE_EBUFFER = buffer too small
+      if not zinflatewrite(z, data, chunksize, size-chunksize=0) then exit; // might be ZFLATE_EBUFFER = buffer too small
       // if we get some decompressed data (it may not be flushed yet)
       if z.bytesavailable > 0 then begin
         // alloc mem for output
