@@ -272,20 +272,12 @@ end;
 // -- headers rountines ------------------
 
 function zreadzlibheader(data: pointer; var info: tzlibinfo): boolean;
-var
-  cinfo, cmethod, flevel, fdict, fcheck: byte;
 begin
   result := false;
   try
     fillchar(info, sizeof(info), 0);
-    // ref: https://stackoverflow.com/questions/9050260/what-does-a-zlib-header-look-like/54915442#54915442
-    cinfo   := pbyte(data)^   and %11110000 shr 4; // window size 0-7, usually 7, 2^cinfo*256, 256-32768
-    cmethod := pbyte(data)^   and %00001111;       // method, always 8 (DEFLATE)
-    flevel  := pbyte(data+1)^ and %11000000 shr 6; // level 0-3
-    fdict   := pbyte(data+1)^ and %00100000 shr 5; // dict 0-1, usually 0
-    fcheck  := pbyte(data+1)^ and %00011111;       // check 0-31 (value added so the whole 2 byte header can be validated)
-    result := {validate info} ((cinfo <= 7) and (cmethod = 8) and (flevel <= 3) and (fdict <= 1))
-              {validate checksum} and ((pbyte(data)^*256+pbyte(data+1)^) mod 31 = 0);
+    // check first byte (4 bits <= 7 (level) & 4 bits = 8 (algo deflate)), and checksum (2 bytes as big-endian uint16 mod 31 = 0)
+    result := ((pbyte(data)^ and $f0 shr 4) <= 7) and ((pbyte(data)^ and $0f) = 8) and (swap(pword(data)^) mod 31 = 0);
     if not result then exit;
     info.footerlen := 4;
     info.streamat := 2;
