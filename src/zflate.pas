@@ -172,22 +172,23 @@ const
   TOKMATCH = dword($80000000);   // bit 31 = match; bits 16..24 length, bits 0..15 distance
 
 var
-  // value -> code index, filled once at startup; read-only afterwards so every
-  // thread can share them. replaces a linear scan over LB / DB per token
+  // filled once at startup; read-only afterwards so every thread can share them
   LENSYM: array[259] of byte;    // length 3..258 -> lit/len code index 0..28
   DISTSYM: array[512] of byte;   // distance -> code index, zlib's two-range split
+  CRCTAB: array[256] of dword;   // crc32 of each byte value, the standard table
 
 threadvar
   abort: boolean;     // progress callback requested abort
 
-// ----- checksums (bitwise, smallest form) -----
+// ----- checksums -----
 
+// one table lookup per byte instead of eight shift/xor steps; the table costs 1 kB
+// and makes gzip's footer roughly eight times cheaper to compute
 function crc32b(crc: dword; data: pbyte; len: dword): dword;
 begin
   crc := not crc;
   while len > 0 do begin
-    crc := crc xor data^;
-    for var i := 0 to 7 do if crc and 1 <> 0 then crc := (crc shr 1) xor $edb88320 else crc := crc shr 1;
+    crc := CRCTAB[(crc xor data^) and $ff] xor (crc shr 8);
     inc(data); dec(len);
   end;
   result := not crc;
@@ -1420,5 +1421,11 @@ initialization
   // distances 1..256 map one to one, above that each 128-wide bucket shares a code
   for var d := 1 to 256 do DISTSYM[d-1] := sym(d, @DB[0], 29);
   for var d := 257 to 32_768 do DISTSYM[256 + ((d-1) shr 7)] := sym(d, @DB[0], 29);
+  // crc32 table: the bitwise reduction of each byte value, done once
+  for var i := 0 to 255 do begin
+    var c := dword(i);
+    for var k := 0 to 7 do if c and 1 <> 0 then c := (c shr 1) xor $edb88320 else c := c shr 1;
+    CRCTAB[i] := c;
+  end;
 
 end.
