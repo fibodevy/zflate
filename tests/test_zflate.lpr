@@ -421,6 +421,42 @@ begin
   check('stream abort decompress progress', zdecompress_stream(mkreader(sgz, 65_536), mkwriter) = ZFLATE_EABORTED);
   zprogress := nil;
 
+  // ----- one-shot functions honour zuse_threads too -----
+
+  zuse_threads := 4;
+  // multi-chunk input, so there is something to spread across workers
+  check('one-shot gzip parallel roundtrips', gzdecode(gzencode(big)) = big);
+  check('one-shot zlib parallel roundtrips', gzuncompress(gzcompress(big)) = big);
+  check('one-shot raw parallel roundtrips', gzinflate(gzdeflate(big)) = big);
+  check('one-shot parallel level 1', gzdecode(gzencode(big, 1)) = big);
+  check('one-shot parallel level 0', gzdecode(gzencode(big, 0)) = big);
+  check('one-shot parallel text', gzdecode(gzencode(text)) = text);
+  // a sequentially built stream and a parallel one must carry the same bytes
+  var par8 := gzencode(big);
+  zuse_threads := 1;
+  check('one-shot seq and parallel agree', gzdecode(par8) = gzdecode(gzencode(big)));
+  // small and empty inputs must not care about the thread count
+  zuse_threads := 4;
+  check('one-shot parallel small input', gzdecode(gzencode('tiny')) = 'tiny');
+  check('one-shot parallel empty input', (gzdecode(gzencode('')) = '') and (zlasterror = ZFLATE_OK));
+  check('one-shot parallel tbytes', gzdecode(gzencode(tb)) = tb);
+  // progress and abort still work through the threaded one-shot path
+  var pcalls := 0;
+  zprogress := function(position, totalsize, outputsize: qword): boolean
+  begin
+    inc(pcalls);
+    result := true;
+  end;
+  check('one-shot parallel progress roundtrips', gzdecode(gzencode(big)) = big);
+  check('one-shot parallel progress called', pcalls > 0);
+  zprogress := function(position, totalsize, outputsize: qword): boolean
+  begin
+    result := false;
+  end;
+  check('one-shot parallel EABORTED', (gzencode(big) = '') and (zlasterror = ZFLATE_EABORTED));
+  zprogress := nil;
+  zuse_threads := 1;
+
   // ----- parallel compression (zuse_threads > 1) -----
 
   zuse_threads := 4;

@@ -658,18 +658,77 @@ begin
   end;
 end;
 
+// compress one chunk into a self-contained, byte-aligned DEFLATE fragment: a
+// non-final block followed by an empty stored block that flushes to a byte
+// boundary, so fragments from different threads concatenate into a valid stream
+procedure compressFragment(src: pbyte; len: dword; level: dword; out frag: TBytes);
+begin
+  setLevel(level);                               // runs on the worker thread, sets its own state
+  buf := nil; cap := 0; op := 0; bb := 0; bc := 0;
+  sp := src; slen := len;
+  compressBlock(false);
+  put(0, 1); put(0, 2); flush;                   // empty non-final stored block: BFINAL=0 BTYPE=00, align
+  ob1(0); ob1(0); ob1($ff); ob1($ff);            // LEN=0, NLEN=FFFF
+  frag := nil;
+  setlength(frag, op);
+  if op > 0 then Move(buf^, frag[0], op);
+  FreeMem(buf); buf := nil; cap := 0;
+end;
+
+// compress data across nt workers and append the fragments to the output, in
+// order. the whole input is already in memory, so the chunks are compressed
+// straight out of it with no copying; a batch at a time keeps the progress
+// callback and its abort responsive. leaves the stream open: the caller emits
+// the final block. must be called on a byte boundary
+procedure packParallel(data: pointer; len: dword; level: dword; nt: longint);
+begin
+  var frags: array of TBytes := nil;
+  setlength(frags, nt);
+  var cb := zprogress; zprogress := nil;         // this thread is a worker too, keep the per-block sites quiet
+  var at: qword := 0;
+  while at < len do begin
+    var cnt := 0;
+    while (cnt < nt) and (at + qword(cnt) * ZSCHUNK < len) do inc(cnt);
+    // this thread is one of the workers, and compressFragment takes the encoder
+    // output buffer over for its own fragment; park what we have accumulated so
+    // far (the container header, and every fragment before this batch)
+    var sbuf := buf; var scap := cap; var sop := op; var sbb := bb; var sbc := bc;
+    for parallel(nt) var s := 0 to cnt-1 do begin
+      var off := at + qword(s) * ZSCHUNK;
+      var n := len - off;
+      if n > ZSCHUNK then n := ZSCHUNK;
+      compressFragment(pbyte(data) + off, n, level, frags[s]);
+    end;
+    buf := sbuf; cap := scap; op := sop; bb := sbb; bc := sbc;
+    for var s := 0 to cnt-1 do begin
+      obn(pointer(frags[s]), length(frags[s]));
+      frags[s] := nil;
+    end;
+    at := at + qword(cnt) * ZSCHUNK;
+    if at > len then at := len;
+    if (cb <> nil) and (not cb(at, len, op)) then begin abort := true; break; end;
+  end;
+  zprogress := cb;
+  if not abort then begin put(1, 1); put(1, 2); put(0, 7); end;   // final empty block: the fragments are all non-final
+end;
+
 // fmt: ZFLATE_RAW / ZFLATE_ZLIB / ZFLATE_GZIP. header + deflate stream + checksum footer
 function pack(fmt: longint; data: pointer; len: dword; out outbuf: pointer; out outlen: dword; level: dword): integer;
 begin
   outbuf := nil; outlen := 0; abort := false;
   if ((data = nil) and (len <> 0)) or (len > $7FFFFFFF) then exit(ZFLATE_EDEFLATE);
   setLevel(level);
+  var nt := zuse_threads;
+  if nt < 1 then nt := 1;
+  if nt > 64 then nt := 64;
   buf := nil; cap := 0; op := 0; bb := 0; bc := 0;
   progbase := 0; progtotal := len;
   result := ZFLATE_EDEFLATE;
   try
     packHeader(fmt, level);
     if len = 0 then begin put(1, 1); put(1, 2); put(0, 7); end                // empty: final fixed, just EOB
+    else if nt > 1 then
+      packParallel(data, len, level, nt)
     else
       // one block per chunk, so the token buffer stays bounded on huge inputs
       for var at: dword := 0 to (len - 1) div ZSCHUNK do begin
@@ -747,23 +806,6 @@ begin
   if buf <> nil then begin FreeMem(buf); buf := nil; end;
   FreeMem(bufA); FreeMem(bufB);
   zprogress := cb;
-end;
-
-// compress one chunk into a self-contained, byte-aligned DEFLATE fragment: a
-// non-final block followed by an empty stored block that flushes to a byte
-// boundary, so fragments from different threads concatenate into a valid stream
-procedure compressFragment(src: pbyte; len: dword; level: dword; out frag: TBytes);
-begin
-  setLevel(level);                               // runs on the worker thread, sets its own state
-  buf := nil; cap := 0; op := 0; bb := 0; bc := 0;
-  sp := src; slen := len;
-  compressBlock(false);
-  put(0, 1); put(0, 2); flush;                   // empty non-final stored block: BFINAL=0 BTYPE=00, align
-  ob1(0); ob1(0); ob1($ff); ob1($ff);            // LEN=0, NLEN=FFFF
-  frag := nil;
-  setlength(frag, op);
-  if op > 0 then Move(buf^, frag[0], op);
-  FreeMem(buf); buf := nil; cap := 0;
 end;
 
 // multi-threaded streaming compressor: reads batches of nt chunks, compresses

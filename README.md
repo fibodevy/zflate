@@ -147,14 +147,14 @@ The compressor takes the input in 1 MB chunks, each becomes its own DEFLATE bloc
 
 ## Multithreading
 
-Codec state is per-thread (`threadvar`), so different threads can compress and decompress independently with no locking. On top of that, the streaming compressors can split the work across worker threads. Set the `zuse_threads` threadvar before the call:
+Codec state is per-thread (`threadvar`), so different threads can compress and decompress independently with no locking. On top of that, every compressing function can split the work across worker threads. Set the `zuse_threads` threadvar before the call:
 
 ```pascal
 zuse_threads := 4;                    // 0 or 1 = sequential (default), N = N workers
-gzencode_stream(@reader, @writer, totalsize);
+var packed := gzencode(hugeString);   // one-shot, streaming and file APIs all honour it
 ```
 
-Each chunk is compressed on its own thread into an independent, byte-aligned block; the chunks are written in order, so the output is an ordinary gzip/zlib/deflate stream that any decoder reads. `zflatefiles` inherits this: set `zuse_threads` before `gzencode_file` or `TZFlateFile.compressToFile` and a large file compresses across all cores.
+Each 1 MB chunk is compressed on its own thread into an independent, byte-aligned block; the chunks are emitted in order, so the output is an ordinary gzip/zlib/deflate stream that any decoder reads. Inputs of a chunk or less never spawn anything, so leaving `zuse_threads` high costs nothing on small strings.
 
 Measured on a 16-core desktop, 96 MB of text at level 9 ([examples/threads.pp](examples/threads.pp) reproduces it):
 
@@ -164,6 +164,8 @@ Measured on a 16-core desktop, 96 MB of text at level 9 ([examples/threads.pp](e
 | 2 | 3.1 s | 31.2 MB/s | 1.8x |
 | 4 | 1.8 s | 52.1 MB/s | 3.0x |
 | 8 | 1.3 s | 74.9 MB/s | 4.3x |
+
+The one-shot functions scale the same way, and a touch better since they compress straight out of the caller's buffer with no copying: `gzencode()` on a 64 MB string goes from 25.3 MB/s on one thread to 120.3 MB/s on eight.
 
 Decompression is inherently sequential (a generic DEFLATE stream has no block index) and always runs on one thread. On unix the parallel path needs threading support; `zflate` pulls in `cthreads` automatically under `{$ifdef unix}`.
 
