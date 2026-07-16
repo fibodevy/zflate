@@ -157,9 +157,11 @@ const
   WM = WS - 1;
 
   // per compression level (0 = store only): hash-chain walk limit, match length
-  // that ends the search early, and whether to use lazy matching
+  // that ends the search early, the length past which an already-found match cuts
+  // the walk to a quarter, and whether to use lazy matching. zlib's tuning table
   LVCHAIN: array[10] of word    = (0, 4, 8, 32, 16, 32, 128, 256, 1024, 4096);
   LVNICE: array[10] of word     = (0, 8, 16, 32, 16, 32, 128, 128, 258, 258);
+  LVGOOD: array[10] of word     = (0, 4, 4, 4, 4, 8, 8, 8, 32, 32);
   LVLAZY: array[10] of boolean  = (false, false, false, false, true, true, true, true, true, true);
 
   ZSCHUNK = 1_048_576;  // encoder input chunk: one chunk = one DEFLATE block
@@ -203,7 +205,7 @@ end;
 // encoder state (per-thread: each worker of the parallel path owns a copy)
 threadvar
   zlevel: longint;                               // active compression level, 0 = store
-  zchain, znice: longint;                        // search limits derived from zlevel
+  zchain, znice, zgood: longint;                 // search limits derived from zlevel
   zlazy: boolean;                                // lazy matching derived from zlevel
   sp: PByte;
   slen, op, cap, bb, bc, mst: longint;           // mst: match start from fm
@@ -238,6 +240,7 @@ begin
   zlevel := level;
   zchain := LVCHAIN[level];
   znice := LVNICE[level];
+  zgood := LVGOOD[level];
   zlazy := LVLAZY[level];
 end;
 
@@ -393,8 +396,9 @@ begin
 end;
 
 // longest match for position p (needs 3 bytes lookahead); inserts p into the hash
-// chains, returns the length (>= 3) or 2 if none, and sets mst to the match start
-function fm(p: longint): longint;
+// chains, returns the length (>= 3) or 2 if none, and sets mst to the match start.
+// prevlen is the match already in hand at p-1, 0 when there is none
+function fm(p, prevlen: longint): longint;
 begin
   // the per-thread state is hoisted into locals up front: the chain walk below
   // runs up to zchain times per call and must not pay a TLS lookup per iteration
@@ -403,6 +407,9 @@ begin
   var pp: plongint := @prev[0];
   var chain := zchain;
   var nice := znice;
+  // already sitting on a decent match: spend a quarter of the effort looking for
+  // a better one (zlib's good_length)
+  if prevlen >= zgood then chain := chain shr 2;
 
   var h := ((s[p] shl 10) xor (s[p+1] shl 5) xor s[p+2]) and HM;
   var cand := ph[h];
@@ -448,7 +455,8 @@ begin
       if not zprogress(progbase + i, progtotal, op) then begin abort := true; exit; end;
     end;
     var ml := 2;
-    if i + 3 <= slen then ml := fm(i);                     // best match at i (inserts i)
+    // pl is the match deferred from i-1 in lazy mode, 2 (i.e. none) otherwise
+    if i + 3 <= slen then ml := fm(i, pl);                 // best match at i (inserts i)
     if not zlazy then begin
       // greedy: emit the match at i straight away
       if ml >= 3 then begin
