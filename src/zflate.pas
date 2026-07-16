@@ -162,9 +162,18 @@ const
   LVNICE: array[10] of word     = (0, 8, 16, 32, 16, 32, 128, 128, 258, 258);
   LVLAZY: array[10] of boolean  = (false, false, false, false, true, true, true, true, true, true);
 
-  ZSCHUNK = 1_048_576;  // streaming: encoder input chunk
+  ZSCHUNK = 1_048_576;  // encoder input chunk: one chunk = one DEFLATE block
   ZSINBUF = 262_144;    // streaming: decoder input buffer
   ZSOUTMAX = 1_048_576; // streaming: decoder output flush threshold
+
+  // LZ token: literal 0..255, or a match with the flag set
+  TOKMATCH = dword($80000000);   // bit 31 = match; bits 16..24 length, bits 0..15 distance
+
+var
+  // value -> code index, filled once at startup; read-only afterwards so every
+  // thread can share them. replaces a linear scan over LB / DB per token
+  LENSYM: array[259] of byte;    // length 3..258 -> lit/len code index 0..28
+  DISTSYM: array[512] of byte;   // distance -> code index, zlib's two-range split
 
 threadvar
   abort: boolean;     // progress callback requested abort
@@ -197,8 +206,11 @@ threadvar
   zchain, znice: longint;                        // search limits derived from zlevel
   zlazy: boolean;                                // lazy matching derived from zlevel
   sp: PByte;
-  slen, op, cap, bb, bc, mst, mode: longint;     // mst: match start from fm; mode: 0 = count, 1 = emit
+  slen, op, cap, bb, bc, mst: longint;           // mst: match start from fm
   buf: pointer;
+  toks: pdword;                                  // LZ tokens of the current block
+  tokn: longint;                                 // tokens recorded
+  progbase, progtotal: qword;                    // progress reporting across chunks
   head: array[HS] of longint;               // LZ77 hash chains
   prev: array[WS] of longint;
   fl: array[288] of longint;                  // lit/len + dist frequencies
@@ -333,22 +345,42 @@ end;
 function sym(v: longint; t: PWord; hi: longint): longint;
 begin for var i := hi downto 0 do if v >= t[i] then exit(i); result := 0; end;
 
-// count or emit one literal
-procedure tlit(b: longint);
+// distance -> code index, through DISTSYM (zlib's split: exact below 257, then
+// grouped in 128-wide buckets that all share one code)
+function dsym(dist: longint): longint; inline;
 begin
-  if mode = 0 then inc(fl[b]) else put(lcode[b], llen[b]);
+  if dist <= 256 then result := DISTSYM[dist-1] else result := DISTSYM[256 + ((dist-1) shr 7)];
 end;
 
-// count or emit one (length, distance) match
-procedure tmatch(ln, dist: longint);
+// record one literal
+procedure tlit(b: longint); inline;
 begin
-  var li := sym(ln, @LB[0], 28); var di := sym(dist, @DB[0], 29);
-  if mode = 0 then begin inc(fl[257+li]); inc(fd[di]); end
-  else begin
-    put(lcode[257+li], llen[257+li]);
-    if LE[li] > 0 then put(ln - LB[li], LE[li]);
-    put(dcode[di], dlen[di]);
-    if DE[di] > 0 then put(dist - DB[di], DE[di]);
+  inc(fl[b]);
+  toks[tokn] := b; inc(tokn);
+end;
+
+// record one (length, distance) match
+procedure tmatch(ln, dist: longint); inline;
+begin
+  inc(fl[257 + LENSYM[ln]]); inc(fd[dsym(dist)]);
+  toks[tokn] := TOKMATCH or (dword(ln) shl 16) or dword(dist); inc(tokn);
+end;
+
+// replay the recorded tokens through the active Huffman codes
+procedure emitTokens;
+begin
+  for var i := 0 to tokn-1 do begin
+    var t := toks[i];
+    if t < TOKMATCH then put(lcode[t], llen[t])
+    else begin
+      var ln := longint((t shr 16) and $1ff);
+      var dist := longint(t and $ffff);
+      var li := LENSYM[ln]; var di := dsym(dist);
+      put(lcode[257+li], llen[257+li]);
+      if LE[li] > 0 then put(ln - LB[li], LE[li]);
+      put(dcode[di], dlen[di]);
+      if DE[di] > 0 then put(dist - DB[di], DE[di]);
+    end;
   end;
 end;
 
@@ -382,20 +414,19 @@ begin
   result := best;
 end;
 
-// LZ77 over the whole input. Above level 3 a match at i is held back one byte to
-// see if i+1 starts a longer one (zlib's lazy heuristic), below it every match is
-// taken as found. Deterministic, so the count pass and the emit pass produce
-// identical tokens.
+// LZ77 over the whole input, recording tokens and their frequencies in one pass.
+// Above level 3 a match at i is held back one byte to see if i+1 starts a longer
+// one (zlib's lazy heuristic), below it every match is taken as found.
 procedure lz;
 begin
   FillChar(head, sizeof(head), $FF);
+  tokn := 0;
   var i := 0; var pl := 2; var ps := 0; var avail := 0;   // pl/ps: match deferred from i-1
   var nx := 0;
   while i < slen do begin
-    // count pass maps to the first half of the progress range, emit pass to the second
     if (zprogress <> nil) and (i >= nx) then begin
       inc(nx, 65_536);
-      if not zprogress((qword(mode) * slen + i) div 2, slen, op) then begin abort := true; exit; end;
+      if not zprogress(progbase + i, progtotal, op) then begin abort := true; exit; end;
     end;
     var ml := 2;
     if i + 3 <= slen then ml := fm(i);                     // best match at i (inserts i)
@@ -468,7 +499,7 @@ procedure emitStored(final: boolean);
 begin
   var p := 0;
   while p < slen do begin
-    if (zprogress <> nil) and (not zprogress((qword(slen) + p) div 2, slen, op)) then begin abort := true; exit; end;
+    if (zprogress <> nil) and (not zprogress(progbase + p, progtotal, op)) then begin abort := true; exit; end;
     var n := slen - p; if n > 65_535 then n := 65_535;
     if p + n >= slen then put(ord(final), 1) else put(0, 1);  // BFINAL on the last block
     put(0, 2); flush;                                // BTYPE = 00, align to byte
@@ -487,58 +518,64 @@ begin
   FillChar(FIXL[0], 144, 8); FillChar(FIXL[144], 112, 9); FillChar(FIXL[256], 24, 7); FillChar(FIXL[280], 8, 8);
   FillChar(FIXD[0], 30, 5);
 
-  // pass 1: gather symbol frequencies
+  // one LZ pass: records the tokens and their frequencies. the emit pass below
+  // replays the tokens, so the match finder runs once per block, not twice
   FillChar(fl, sizeof(fl), 0); FillChar(fd, sizeof(fd), 0);
-  mode := 0; lz; inc(fl[256]);
-  if abort then exit;
-
-  // dynamic lit/len + distance Huffman from the frequencies
-  mkhuff(@fl[0], 286, 15, @llen[0]);
-  mkhuff(@fd[0], 30, 15, @dlen[0]);
-  lcount := 286; while (lcount > 257) and (llen[lcount-1] = 0) do dec(lcount);
-  dcount := 30;  while (dcount > 1) and (dlen[dcount-1] = 0) do dec(dcount);
-
-  // code-length alphabet for the dynamic header
-  hdrRLE;
-  mkhuff(@cf[0], 19, 7, @cllen[0]);
-  numCL := 19; while (numCL > 4) and (cllen[CO[numCL-1]] = 0) do dec(numCL);
-
-  // canonical codes for all three alphabets
-  mkcodes(@llen[0], 286, @lcode[0]);
-  mkcodes(@dlen[0], 30, @dcode[0]);
-  mkcodes(@cllen[0], 19, @clcode[0]);
-
-  // candidate sizes: dynamic vs fixed (one block) vs stored (chunked, byte-aligned)
-  var hbits: int64 := 5 + 5 + 4 + 3 * numCL;
-  for var i := 0 to rlen-1 do hbits := hbits + cllen[clsym[i]] + clxb[i];
-  var dynBits := 3 + hbits + tokbits(@llen[0], @dlen[0]);
-  var fixBits := 3 + tokbits(@FIXL[0], @FIXD[0]);
-  var nb := (slen + 65_534) div 65_535;
-  var storedBytes: int64 := int64(nb) * 5 + slen;
-
-  var nonStored := dynBits; var dyn := true;
-  if fixBits < dynBits then begin nonStored := fixBits; dyn := false; end;
-
-  if storedBytes < (nonStored + 7) div 8 then
-    emitStored(final)
-  else begin
-    put(ord(final), 1);                            // BFINAL
-    if dyn then begin
-      put(2, 2);                                   // BTYPE = 10 (dynamic)
-      put(lcount - 257, 5); put(dcount - 1, 5); put(numCL - 4, 4);
-      for var i := 0 to numCL-1 do put(cllen[CO[i]], 3);
-      for var i := 0 to rlen-1 do begin
-        put(clcode[clsym[i]], cllen[clsym[i]]);
-        if clxb[i] > 0 then put(clext[i], clxb[i]);
-      end;
-    end else begin
-      put(1, 2);                                   // BTYPE = 01 (fixed)
-      Move(FIXL[0], llen[0], 288); Move(FIXD[0], dlen[0], 30);
-      mkcodes(@llen[0], 288, @lcode[0]); mkcodes(@dlen[0], 30, @dcode[0]);
-    end;
-    mode := 1; lz;                                 // pass 2: emit codes
+  toks := GetMem((slen + 1) * sizeof(dword));   // at most one token per input byte
+  try
+    lz;
+    inc(fl[256]);
     if abort then exit;
-    put(lcode[256], llen[256]);                    // end of block
+
+    // dynamic lit/len + distance Huffman from the frequencies
+    mkhuff(@fl[0], 286, 15, @llen[0]);
+    mkhuff(@fd[0], 30, 15, @dlen[0]);
+    lcount := 286; while (lcount > 257) and (llen[lcount-1] = 0) do dec(lcount);
+    dcount := 30;  while (dcount > 1) and (dlen[dcount-1] = 0) do dec(dcount);
+
+    // code-length alphabet for the dynamic header
+    hdrRLE;
+    mkhuff(@cf[0], 19, 7, @cllen[0]);
+    numCL := 19; while (numCL > 4) and (cllen[CO[numCL-1]] = 0) do dec(numCL);
+
+    // canonical codes for all three alphabets
+    mkcodes(@llen[0], 286, @lcode[0]);
+    mkcodes(@dlen[0], 30, @dcode[0]);
+    mkcodes(@cllen[0], 19, @clcode[0]);
+
+    // candidate sizes: dynamic vs fixed (one block) vs stored (chunked, byte-aligned)
+    var hbits: int64 := 5 + 5 + 4 + 3 * numCL;
+    for var i := 0 to rlen-1 do hbits := hbits + cllen[clsym[i]] + clxb[i];
+    var dynBits := 3 + hbits + tokbits(@llen[0], @dlen[0]);
+    var fixBits := 3 + tokbits(@FIXL[0], @FIXD[0]);
+    var nb := (slen + 65_534) div 65_535;
+    var storedBytes: int64 := int64(nb) * 5 + slen;
+
+    var nonStored := dynBits; var dyn := true;
+    if fixBits < dynBits then begin nonStored := fixBits; dyn := false; end;
+
+    if storedBytes < (nonStored + 7) div 8 then
+      emitStored(final)
+    else begin
+      put(ord(final), 1);                            // BFINAL
+      if dyn then begin
+        put(2, 2);                                   // BTYPE = 10 (dynamic)
+        put(lcount - 257, 5); put(dcount - 1, 5); put(numCL - 4, 4);
+        for var i := 0 to numCL-1 do put(cllen[CO[i]], 3);
+        for var i := 0 to rlen-1 do begin
+          put(clcode[clsym[i]], cllen[clsym[i]]);
+          if clxb[i] > 0 then put(clext[i], clxb[i]);
+        end;
+      end else begin
+        put(1, 2);                                   // BTYPE = 01 (fixed)
+        Move(FIXL[0], llen[0], 288); Move(FIXD[0], dlen[0], 30);
+        mkcodes(@llen[0], 288, @lcode[0]); mkcodes(@dlen[0], 30, @dcode[0]);
+      end;
+      emitTokens;                                    // replay pass 1's tokens
+      put(lcode[256], llen[256]);                    // end of block
+    end;
+  finally
+    FreeMem(toks); toks := nil;
   end;
 end;
 
@@ -587,11 +624,21 @@ begin
   if ((data = nil) and (len <> 0)) or (len > $7FFFFFFF) then exit(ZFLATE_EDEFLATE);
   setLevel(level);
   buf := nil; cap := 0; op := 0; bb := 0; bc := 0;
+  progbase := 0; progtotal := len;
   result := ZFLATE_EDEFLATE;
   try
     packHeader(fmt, level);
     if len = 0 then begin put(1, 1); put(1, 2); put(0, 7); end                // empty: final fixed, just EOB
-    else begin sp := data; slen := len; compressBlock(true); end;
+    else
+      // one block per chunk, so the token buffer stays bounded on huge inputs
+      for var at: dword := 0 to (len - 1) div ZSCHUNK do begin
+        progbase := qword(at) * ZSCHUNK;
+        sp := pbyte(data) + progbase;
+        slen := len - progbase;
+        if slen > ZSCHUNK then slen := ZSCHUNK;
+        compressBlock(progbase + dword(slen) >= len);
+        if abort then break;
+      end;
     if abort then result := ZFLATE_EABORTED
     else begin
       flush;
@@ -1326,5 +1373,12 @@ begin
   system.Str(code, result);
   {$endif}
 end;
+
+initialization
+  // value -> code index tables, built once and read-only from then on
+  for var ln := 3 to 258 do LENSYM[ln] := sym(ln, @LB[0], 28);
+  // distances 1..256 map one to one, above that each 128-wide bucket shares a code
+  for var d := 1 to 256 do DISTSYM[d-1] := sym(d, @DB[0], 29);
+  for var d := 257 to 32_768 do DISTSYM[256 + ((d-1) shr 7)] := sym(d, @DB[0], 29);
 
 end.

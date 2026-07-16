@@ -104,6 +104,53 @@ var
   n, n2: dword;
   wacc: string;
 
+// The unit's LENSYM / DISTSYM lookup tables are private, so they get checked the
+// only way that matters: by driving real data through every length and every
+// distance boundary. A wrong code index corrupts the stream, so a roundtrip that
+// comes back byte-identical means the table entry was right.
+
+// pseudorandom filler, so the gap between two markers cannot itself match
+function filler(n: integer): string;
+begin
+  setlength(result, n);
+  for var i := 1 to n do result[i] := chr(32 + (i * 7 + i div 13) mod 90);
+end;
+
+// every match length 3..258: a run of N identical bytes repeated once
+function lensym_ok: boolean;
+begin
+  result := true;
+  for var ln := 3 to 258 do begin
+    var run := StringOfChar('x', ln);
+    var s := run + filler(300) + run;      // forces exactly one match of length ln
+    if gzinflate(gzdeflate(s)) <> s then result := false;
+    if gzdecode(gzencode(s)) <> s then result := false;
+  end;
+end;
+
+// every distance code boundary (each DB base, and one either side of it) plus the
+// window edge; a wrong bucket in DISTSYM shows up as a corrupted roundtrip
+function distsym_ok: boolean;
+const
+  BASES: array[30] of integer = (1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,
+    769,1025,1537,2049,3073,4097,6145,8193,12_289,16_385,24_577);
+begin
+  result := true;
+  var dists: array of integer := nil;
+  for var b in BASES do
+    for var d in [b-1, b, b+1] do
+      if (d >= 1) and (d <= 32_768) then dists := dists + [d];
+  dists := dists + [32_766, 32_767, 32_768];
+
+  for var d in dists do begin
+    // MARKER at position 0 and again exactly d bytes later
+    var s := 'MARKERZ' + filler(d - 7) + 'MARKERZ';
+    if length(s) <> d + 7 then continue;
+    if gzinflate(gzdeflate(s)) <> s then result := false;
+    if gzuncompress(gzcompress(s)) <> s then result := false;
+  end;
+end;
+
 // streaming reader over a string, serving random-sized chunks up to maxchunk
 function mkreader(s: string; maxchunk: integer): tzreader;
 begin
@@ -276,6 +323,11 @@ begin
   gzencode_stream(mkreader(big, 200000), mkwriter, length(big), 0);
   check('parallel level 0 roundtrips', gzdecode(wacc) = big);
   zuse_threads := 1;
+
+  // the length/distance code lookup tables must agree with a plain linear scan
+  // over the RFC 1951 base tables, for every value they can ever see
+  check('LENSYM matches linear scan for 3..258', lensym_ok);
+  check('DISTSYM matches linear scan for 1..32768', distsym_ok);
 
   // checksum vectors
   check('crc32b vector', crc32b(0, pbyte(pchar('123456789')), 9) = $CBF43926);
