@@ -1,20 +1,12 @@
-#compiled things
-lib
-*.a
-*.compiled
+/ref
+lib/
 *.o
+*.obj
 *.ppu
-*.s
+*.compiled
+*.or
+*.res
+*.a
 *.exe
-*.dll
-
-#project session
-*.lps
-*.ctps
-
-#tracert output
-*.trc
-
-#custom things
-bak
-backup
+*.md
+!README.md
