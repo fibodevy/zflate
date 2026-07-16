@@ -385,32 +385,51 @@ begin
 end;
 
 // insert position p into the hash chains (needs 3 bytes of lookahead)
-procedure ins(p: longint);
+procedure ins(p: longint); inline;
 begin
-  var h := ((sp[p] shl 10) xor (sp[p+1] shl 5) xor sp[p+2]) and HM;
-  prev[p and WM] := head[h]; head[h] := p;
+  var s: pbyte := sp; var ph: plongint := @head[0]; var pp: plongint := @prev[0];
+  var h := ((s[p] shl 10) xor (s[p+1] shl 5) xor s[p+2]) and HM;
+  pp[p and WM] := ph[h]; ph[h] := p;
 end;
 
 // longest match for position p (needs 3 bytes lookahead); inserts p into the hash
 // chains, returns the length (>= 3) or 2 if none, and sets mst to the match start
 function fm(p: longint): longint;
 begin
-  var h := ((sp[p] shl 10) xor (sp[p+1] shl 5) xor sp[p+2]) and HM;
-  var cand := head[h];
-  prev[p and WM] := cand; head[h] := p;
+  // the per-thread state is hoisted into locals up front: the chain walk below
+  // runs up to zchain times per call and must not pay a TLS lookup per iteration
+  var s: pbyte := sp;
+  var ph: plongint := @head[0];
+  var pp: plongint := @prev[0];
+  var chain := zchain;
+  var nice := znice;
+
+  var h := ((s[p] shl 10) xor (s[p+1] shl 5) xor s[p+2]) and HM;
+  var cand := ph[h];
+  pp[p and WM] := cand; ph[h] := p;
   var best := 2;
+  var bestst := 0;
   var mx := slen - p; if mx > 258 then mx := 258;
   var cw := 0;
-  while (cand >= 0) and (cw < zchain) do begin
+  while (cand >= 0) and (cw < chain) do begin
     if p - cand >= WS then break;                  // distance bounded by the window
-    if (sp[cand+best] = sp[p+best]) and (sp[cand] = sp[p]) then begin
+    if (s[cand+best] = s[p+best]) and (s[cand] = s[p]) then begin
+      // compare 8 bytes per step; both reads stay inside the input because
+      // l+8 <= mx <= slen-p and cand < p. the first differing byte is the low
+      // set bit of the xor, so its position gives the match length directly
       var l := 0;
-      while (l < mx) and (sp[cand+l] = sp[p+l]) do inc(l);
-      // a match at least znice long is good enough, stop walking the chain
-      if l > best then begin best := l; mst := cand; if (l >= mx) or (l >= znice) then break; end;
+      while l + 8 <= mx do begin
+        var x := PQWord(s + cand + l)^ xor PQWord(s + p + l)^;
+        if x <> 0 then begin inc(l, BsfQWord(x) shr 3); break; end;
+        inc(l, 8);
+      end;
+      while (l < mx) and (s[cand+l] = s[p+l]) do inc(l);   // tail
+      // a match at least nice long is good enough, stop walking the chain
+      if l > best then begin best := l; bestst := cand; if (l >= mx) or (l >= nice) then break; end;
     end;
-    cand := prev[cand and WM]; inc(cw);
+    cand := pp[cand and WM]; inc(cw);
   end;
+  if best > 2 then mst := bestst;                  // only meaningful for a real match
   result := best;
 end;
 
