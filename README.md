@@ -1,6 +1,6 @@
 # zflate
 
-Compress and decompress buffers, strings and files like in PHP, in one line. The whole DEFLATE codec lives inside the unit: no zlib, no external libraries, nothing but the RTL (`uses` is empty on Windows, `cthreads` on unix for the threaded path). Adding [zflate.pas](src/zflate.pas) to a program grows the binary by about 33 kB.
+Compress and decompress buffers, strings and files like in PHP, in one line. The whole DEFLATE codec lives inside the unit: no zlib, no external libraries, nothing but the RTL (`uses` is empty on Windows, `cthreads` on unix for the threaded path). Adding [zflate.pas](src/zflate.pas) to a program grows the binary by about 35 kB.
 
 > **Requires a compiler that understands `{$mode unleashed}`.** The units and the examples below lean on inline variables, tuples, match expressions, function references and parallel for, so a stock compiler will not build them.
 
@@ -82,9 +82,9 @@ Named constants: `ZFLATE_STORE` (0), `ZFLATE_FASTEST` (1), `ZFLATE_DEFAULT` (5),
 
 | level | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
 |--|--|--|--|--|--|--|--|--|--|--|
-| KB out | 4096 | 717 | 678 | 599 | 637 | 580 | 538 | 521 | 517 | 517 |
+| KB out | 4096 | 718 | 679 | 600 | 642 | 586 | 543 | 526 | 519 | 519 |
 
-The curve is not strictly monotonic - level 4 is the first lazy-matching level and can land slightly behind level 3's deeper greedy search, exactly as in zlib, which uses the same tuning table.
+The curve is not strictly monotonic - level 4 is the first lazy-matching level and can land slightly behind level 3's deeper greedy search, and 8 and 9 differ only in how long they keep searching. That is how zlib behaves too; the four knobs per level come from its tuning table.
 
 ## Streaming
 
@@ -160,12 +160,29 @@ Measured on a 16-core desktop, 96 MB of text at level 9 ([examples/threads.pp](e
 
 | threads | time | speed | speedup |
 |--|--|--|--|
-| 1 | 36.4 s | 2.6 MB/s | 1.0x |
-| 2 | 20.1 s | 4.8 MB/s | 1.8x |
-| 4 | 13.3 s | 7.2 MB/s | 2.7x |
-| 8 | 10.1 s | 9.6 MB/s | 3.6x |
+| 1 | 5.6 s | 17.3 MB/s | 1.0x |
+| 2 | 3.1 s | 31.2 MB/s | 1.8x |
+| 4 | 1.8 s | 52.1 MB/s | 3.0x |
+| 8 | 1.3 s | 74.9 MB/s | 4.3x |
 
 Decompression is inherently sequential (a generic DEFLATE stream has no block index) and always runs on one thread. On unix the parallel path needs threading support; `zflate` pulls in `cthreads` automatically under `{$ifdef unix}`.
+
+## Performance
+
+Single core, gzip, 32 MB of text-like data on a desktop x64:
+
+| level | 1 | 6 | 9 | decompress |
+|--|--|--|--|--|
+| speed | 205 MB/s | 93 MB/s | 25 MB/s | 82 MB/s |
+
+Where the speed comes from, in case you are porting or tuning this:
+
+- the match finder runs once per block, not twice: the LZ pass records its tokens and the emit pass replays them
+- candidate matches are compared 8 bytes at a time, taking the first differing byte from the low set bit of the xor
+- the per-thread codec state is lifted into locals around the chain walk and the hash-chain inserts, which would otherwise pay a TLS lookup per iteration
+- length and distance code indexes come from lookup tables rather than a scan over the RFC base tables
+- crc32 is table-driven; the bitwise form was slower than the compressor it fed
+- the level knobs (chain length, nice length, good length, lazy matching) are zlib's tuning table
 
 ## Stream inspection
 
@@ -217,7 +234,7 @@ end;
 
 ## Checksums
 
-The built-in checksums are exported, smallest possible bitwise implementations:
+Both checksums the containers need are exported, and run at roughly 500 MB/s and 440 MB/s:
 
 ```pascal
 function crc32b(crc: dword; data: pbyte; len: dword): dword;    // start with crc = 0
