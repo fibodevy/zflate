@@ -387,12 +387,22 @@ begin
   end;
 end;
 
-// insert position p into the hash chains (needs 3 bytes of lookahead)
-procedure ins(p: longint); inline;
+// insert positions lo..hi-1 into the hash chains, skipping any that lack the 3
+// bytes of lookahead the hash needs. runs once per byte a match covers, so the
+// per-thread state is hoisted out of the loop
+procedure insRange(lo, hi: longint);
 begin
-  var s: pbyte := sp; var ph: plongint := @head[0]; var pp: plongint := @prev[0];
-  var h := ((s[p] shl 10) xor (s[p+1] shl 5) xor s[p+2]) and HM;
-  pp[p and WM] := ph[h]; ph[h] := p;
+  var s: pbyte := sp;
+  var ph: plongint := @head[0];
+  var pp: plongint := @prev[0];
+  var top := slen - 3;                             // last position with lookahead
+  if hi > top + 1 then hi := top + 1;
+  var q := lo;
+  while q < hi do begin
+    var h := ((s[q] shl 10) xor (s[q+1] shl 5) xor s[q+2]) and HM;
+    pp[q and WM] := ph[h]; ph[h] := q;
+    inc(q);
+  end;
 end;
 
 // longest match for position p (needs 3 bytes lookahead); inserts p into the hash
@@ -447,39 +457,42 @@ procedure lz;
 begin
   FillChar(head, sizeof(head), $FF);
   tokn := 0;
-  var i := 0; var pl := 2; var ps := 0; var avail := 0;   // pl/ps: match deferred from i-1
+  var s: pbyte := sp;                                      // stable for the whole pass
+  var n := slen;
+  var lazy := zlazy;
+  var i := 0; var pl := 2; var ps := 0; var avail := 0;    // pl/ps: match deferred from i-1
   var nx := 0;
-  while i < slen do begin
+  while i < n do begin
     if (zprogress <> nil) and (i >= nx) then begin
       inc(nx, 65_536);
       if not zprogress(progbase + i, progtotal, op) then begin abort := true; exit; end;
     end;
     var ml := 2;
     // pl is the match deferred from i-1 in lazy mode, 2 (i.e. none) otherwise
-    if i + 3 <= slen then ml := fm(i, pl);                 // best match at i (inserts i)
-    if not zlazy then begin
+    if i + 3 <= n then ml := fm(i, pl);                    // best match at i (inserts i)
+    if not lazy then begin
       // greedy: emit the match at i straight away
       if ml >= 3 then begin
         tmatch(ml, i - mst);
         var e := i + ml; inc(i);
-        while (i < e) and (i + 3 <= slen) do begin ins(i); inc(i); end;
+        insRange(i, e);
         i := e;
-      end else begin tlit(sp[i]); inc(i); end;
+      end else begin tlit(s[i]); inc(i); end;
       continue;
     end;
     if (pl >= 3) and (ml <= pl) then begin
       // i-1's match is not beaten: emit it and skip the bytes it covers
       tmatch(pl, (i-1) - ps);
       var e := (i-1) + pl; inc(i);
-      while (i < e) and (i + 3 <= slen) do begin ins(i); inc(i); end;
+      insRange(i, e);
       i := e; pl := 2; avail := 0;
     end else begin
       // defer i; the byte at i-1 (if any) could not do better, so emit it literally
-      if avail = 1 then tlit(sp[i-1]);
+      if avail = 1 then tlit(s[i-1]);
       pl := ml; ps := mst; avail := 1; inc(i);
     end;
   end;
-  if avail = 1 then tlit(sp[i-1]);                         // trailing literal
+  if avail = 1 then tlit(s[i-1]);                          // trailing literal
 end;
 
 // append one entry to the RLE'd code-length stream
