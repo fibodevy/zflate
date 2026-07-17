@@ -156,26 +156,33 @@ var packed := gzencode(hugeString);   // one-shot, streaming and file APIs all h
 
 Each 1 MB chunk is compressed on its own thread into an independent, byte-aligned block; the chunks are emitted in order, so the output is an ordinary gzip/zlib/deflate stream that any decoder reads. Inputs of a chunk or less never spawn anything, so leaving `zuse_threads` high costs nothing on small strings.
 
-Measured on a 16-core desktop, 96 MB of text at level 9 ([examples/threads.pp](examples/threads.pp) reproduces it):
+Measured on a 16-core desktop, 96 MB of text at level 9, compiled with `-O2` ([examples/threads.pp](examples/threads.pp) reproduces it):
 
-| threads | time | speed | speedup |
-|--|--|--|--|
-| 1 | 5.6 s | 17.3 MB/s | 1.0x |
-| 2 | 3.1 s | 31.2 MB/s | 1.8x |
-| 4 | 1.8 s | 52.1 MB/s | 3.0x |
-| 8 | 1.3 s | 74.9 MB/s | 4.3x |
+| threads | time | speed | speedup | ratio |
+|--|--|--|--|--|
+| 1 | 7.2 s | 13.3 MB/s | 1.0x | 12.7% |
+| 2 | 3.8 s | 25.0 MB/s | 1.9x | 12.7% |
+| 4 | 2.1 s | 44.8 MB/s | 3.4x | 12.7% |
+| 8 | 1.4 s | 70.6 MB/s | 5.3x | 12.7% |
 
-The one-shot functions scale the same way, and a touch better since they compress straight out of the caller's buffer with no copying: `gzencode()` on a 64 MB string goes from 25.3 MB/s on one thread to 120.3 MB/s on eight.
+The ratio column is what threading costs you: 461 bytes on 96 MB, or 0.0005%, for the markers that let the blocks be written independently.
+
+The one-shot functions scale the same way, and a few percent better since they compress straight out of the caller's buffer with no copying. Level 0 is the exception - there is nothing to compress, so the threads only add batching overhead; leave `zuse_threads` at 1 for it.
 
 Decompression is inherently sequential (a generic DEFLATE stream has no block index) and always runs on one thread. On unix the parallel path needs threading support; `zflate` pulls in `cthreads` automatically under `{$ifdef unix}`.
 
 ## Performance
 
-Single core, gzip, 32 MB of text-like data on a desktop x64:
+Single core, gzip, the same 96 MB payload and `-O2` build as the table above:
 
-| level | 1 | 6 | 9 | decompress |
-|--|--|--|--|--|
-| speed | 205 MB/s | 93 MB/s | 25 MB/s | 82 MB/s |
+| level | 1 | 5 (default) | 6 | 9 | decompress |
+|--|--|--|--|--|--|
+| speed | 93 MB/s | 66 MB/s | 33 MB/s | 13 MB/s | 68 MB/s |
+| ratio | 17.5% | 14.3% | 13.2% | 12.7% | - |
+
+That is the shape of the level knob: going from 1 to 9 costs 7x the time and buys 27% off the output. The default sits at 5 because the curve flattens hard after it.
+
+Compiler flags matter more than you would expect here: the same code without `-O2` does about a third less throughput, so build with optimizations on if you care about it.
 
 Where the speed comes from, in case you are porting or tuning this:
 

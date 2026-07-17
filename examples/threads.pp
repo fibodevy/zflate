@@ -3,7 +3,8 @@ program threads;
 { zuse_threads splits compression across worker threads. Each chunk becomes its
   own DEFLATE block on its own core, and the blocks are written back in order,
   so the result is an ordinary gzip stream that any decoder reads.
-  Build: fpc -Fu../src threads.pp }
+  Build with optimizations, or the numbers are about a third lower:
+  fpc -O2 -Fu../src threads.pp }
 
 {$mode unleashed}
 
@@ -31,17 +32,32 @@ begin
   result := true;
 end;
 
+// Deterministic text-like payload. It must not repeat itself: the codec cuts
+// the input into 1 MB blocks and compresses each on its own, so a payload built
+// by copying one megabyte over and over would hand every block identical data
+// and the levels would all land on the same ratio.
+function maketext(size: integer): string;
+const
+  WORDS: array[12] of string = ('deflate', 'stream', 'compress', 'the quick brown fox', 'zflate',
+    'lorem ipsum dolor sit amet', 'consectetur', 'adipiscing elit', 'huffman', 'window', 'match', 'literal');
 begin
-  // ~96 MB of text-like payload
-  writeln('building test data...');
   RandSeed := 3;
-  var chunk := '';
-  while length(chunk) < 1024*1024 do
-    chunk := chunk + 'the quick brown fox jumps over the lazy dog ' + IntToStr(Random(1000)) + ' ';
-  setlength(chunk, 1024*1024);
-  src := '';
-  setlength(src, 96*1024*1024);
-  for var i := 0 to 95 do Move(chunk[1], src[1 + i*1024*1024], 1024*1024);
+  setlength(result, size);
+  var p := 1;
+  while p <= size do begin
+    var w := WORDS[Random(12)] + ' ';
+    if Random(8) = 0 then w := w + IntToStr(Random(100_000)) + ' ';
+    if Random(20) = 0 then w := w + sLineBreak;
+    var n := length(w);
+    if p + n - 1 > size then n := size - p + 1;
+    Move(w[1], result[p], n);
+    inc(p, n);
+  end;
+end;
+
+begin
+  writeln('building test data...');
+  src := maketext(96*1024*1024);
 
   writeln('input: ', length(src) div (1024*1024), ' MB, cores available: ', GetCPUCount);
   writeln;
