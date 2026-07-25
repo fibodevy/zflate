@@ -158,11 +158,16 @@ const
 
   // per compression level (0 = store only): hash-chain walk limit, match length
   // that ends the search early, the length past which an already-found match cuts
-  // the walk to a quarter, and whether to use lazy matching. zlib's tuning table
+  // the walk to a quarter, the length past which a match is good enough to stop
+  // working on (see LVLAZYLEN below), and whether to use lazy matching
   LVCHAIN: array[10] of word    = (0, 4, 8, 32, 16, 32, 128, 256, 1024, 4096);
   LVNICE: array[10] of word     = (0, 8, 16, 32, 16, 32, 128, 128, 258, 258);
   LVGOOD: array[10] of word     = (0, 4, 4, 4, 4, 8, 8, 8, 32, 32);
   LVLAZY: array[10] of boolean  = (false, false, false, false, true, true, true, true, true, true);
+  // a match this long ends the effort early, in whichever way the level's
+  // strategy can: lazy levels stop looking for a better match at the next byte,
+  // greedy levels stop feeding the bytes the match covers to the hash chains
+  LVLAZYLEN: array[10] of word  = (0, 4, 5, 6, 4, 16, 16, 32, 128, 258);
 
   ZSCHUNK = 1_048_576;  // encoder input chunk: one chunk = one DEFLATE block
   ZSINBUF = 262_144;    // streaming: decoder input buffer
@@ -206,7 +211,7 @@ type
   // gives every worker its own record. too big for the stack (the hash chains
   // alone are 256 kB), so it is heap allocated
   tzdefl = record
-    level, chain, nice, good: longint;             // search effort for the active level
+    level, chain, nice, good, lazylen: longint;    // search effort for the active level
     lazy: boolean;
     aborted: boolean;                              // progress callback requested abort
     usecb: boolean;
@@ -258,7 +263,7 @@ begin
   end else
     zdcache := nil;
   with result^ do begin
-    level := 0; chain := 0; nice := 0; good := 0; lazy := false;
+    level := 0; chain := 0; nice := 0; good := 0; lazylen := 0; lazy := false;
     aborted := false; usecb := false;
     sp := nil; slen := 0; op := 0; mst := 0;
     bb := 0; bc := 0; tokn := 0;
@@ -287,6 +292,7 @@ begin
   e.nice := LVNICE[level];
   e.good := LVGOOD[level];
   e.lazy := LVLAZY[level];
+  e.lazylen := LVLAZYLEN[level];
 end;
 
 // reverse the low n bits (canonical codes are MSB-first, DEFLATE writes LSB-first)
@@ -525,6 +531,7 @@ begin
   var s: pbyte := e.sp;                                    // stable for the whole pass
   var n := e.slen;
   var lazy := e.lazy;
+  var lazylen := e.lazylen;
   var i := 0; var pl := 2; var ps := 0; var avail := 0;    // pl/ps: match deferred from i-1
   var nx := 0;
   while i < n do begin
@@ -532,15 +539,20 @@ begin
       inc(nx, 65_536);
       if not zprogress(e.progbase + i, e.progtotal, e.op) then begin e.aborted := true; exit; end;
     end;
+    // pl is the match deferred from i-1 in lazy mode, 2 (i.e. none) otherwise.
+    // a deferred match already at least lazylen long is taken as it is: looking
+    // for something better here would cost a chain walk it will not repay
+    var searched := (i + 3 <= n) and (pl < lazylen);
     var ml := 2;
-    // pl is the match deferred from i-1 in lazy mode, 2 (i.e. none) otherwise
-    if i + 3 <= n then ml := fm(e, i, pl);                 // best match at i (inserts i)
+    if searched then ml := fm(e, i, pl);                   // best match at i (inserts i)
     if not lazy then begin
       // greedy: emit the match at i straight away
       if ml >= 3 then begin
         tmatch(e, ml, i - e.mst);
         var en := i + ml; inc(i);
-        insRange(e, i, en);
+        // past lazylen the match is long enough that feeding its bytes to the
+        // hash chains buys less than it costs
+        if ml <= lazylen then insRange(e, i, en);
         i := en;
       end else begin tlit(e, s[i]); inc(i); end;
       continue;
@@ -548,7 +560,8 @@ begin
     if (pl >= 3) and (ml <= pl) then begin
       // i-1's match is not beaten: emit it and skip the bytes it covers
       tmatch(e, pl, (i-1) - ps);
-      var en := (i-1) + pl; inc(i);
+      var en := (i-1) + pl;
+      if searched then inc(i);                             // fm already inserted this position
       insRange(e, i, en);
       i := en; pl := 2; avail := 0;
     end else begin
