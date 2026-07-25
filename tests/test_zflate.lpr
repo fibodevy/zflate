@@ -289,7 +289,7 @@ begin
   check('level 9 beats level 1', lvlsizes[9] < lvlsizes[1]);
   check('level 9 beats level 6', lvlsizes[9] <= lvlsizes[6]);
   check('level 6 beats level 1', lvlsizes[6] < lvlsizes[1]);
-  check('default level = 5', length(gzencode(text)) = lvlsizes[5]);
+  check('default level = 4', length(gzencode(text)) = lvlsizes[4]);
   check('ZFLATE_DEFAULT is the level you get without one', length(gzencode(text, ZFLATE_DEFAULT)) = length(gzencode(text)));
   check('level > 9 clamps to 9', length(gzencode(text, 42)) = lvlsizes[9]);
   write('  level sizes (4 MB text):');

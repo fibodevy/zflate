@@ -53,10 +53,10 @@ const
   ZFLATE_ZLIB = 1;
   ZFLATE_GZIP = 2;
 
-  // compression levels: 0 stores, 1 is fastest, 9 compresses best; 5 is the default
+  // compression levels: 0 stores, 1 is fastest, 9 compresses best; 4 is the default
   ZFLATE_STORE   = 0;
   ZFLATE_FASTEST = 1;
-  ZFLATE_DEFAULT = 5;
+  ZFLATE_DEFAULT = 4;
   ZFLATE_BEST    = 9;
 
   ZFLATE_OK           = 0;
@@ -160,14 +160,14 @@ const
   // that ends the search early, the length past which an already-found match cuts
   // the walk to a quarter, the length past which a match is good enough to stop
   // working on (see LVLAZYLEN below), and whether to use lazy matching
-  LVCHAIN: array[10] of word    = (0, 4, 8, 32, 16, 32, 128, 256, 1024, 4096);
-  LVNICE: array[10] of word     = (0, 8, 16, 32, 16, 32, 128, 128, 258, 258);
-  LVGOOD: array[10] of word     = (0, 4, 4, 4, 4, 8, 8, 8, 32, 32);
-  LVLAZY: array[10] of boolean  = (false, false, false, false, true, true, true, true, true, true);
+  LVCHAIN: array[10] of word    = (0, 2, 12, 24, 48, 96, 96, 256, 1024, 4096);
+  LVNICE: array[10] of word     = (0, 128, 32, 64, 258, 48, 258, 258, 258, 128);
+  LVGOOD: array[10] of word     = (0, 4, 4, 4, 4, 4, 32, 8, 8, 4);
+  LVLAZY: array[10] of boolean  = (false, false, false, true, true, true, true, true, true, true);
   // a match this long ends the effort early, in whichever way the level's
   // strategy can: lazy levels stop looking for a better match at the next byte,
   // greedy levels stop feeding the bytes the match covers to the hash chains
-  LVLAZYLEN: array[10] of word  = (0, 4, 5, 6, 4, 16, 16, 32, 128, 258);
+  LVLAZYLEN: array[10] of word  = (0, 8, 32, 8, 16, 32, 258, 128, 32, 128);
 
   ZSCHUNK = 1_048_576;  // encoder input chunk: one chunk = one DEFLATE block
   ZSINBUF = 262_144;    // streaming: decoder input buffer
