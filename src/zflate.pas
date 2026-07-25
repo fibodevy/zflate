@@ -898,300 +898,436 @@ begin result := zcompress_stream(ZFLATE_GZIP, reader, writer, totalsize, level);
 
 // ----- inflate decoder -----
 
-// decoder state (per-thread). er: hard error
+const
+  IFAST = 9;                     // huffman fast-table bits
+  IFASTSIZE = 1 shl IFAST;
+  IFASTMASK = IFASTSIZE - 1;
+  ISLACK = 8;                    // copy overshoot the output buffer must tolerate
+
+type
+  // one canonical huffman table: counts/symbols for the exact walk, plus a lookup
+  // that resolves every code of at most IFAST bits in a single step
+  tzhuff = record
+    cnt: array[16] of word;
+    sym: array[288] of word;
+    fast: array[IFASTSIZE] of word;   // (code length shl 9) or symbol, 0 = not filled
+  end;
+
+  // decoder state. plain data only, so it lives on the caller's stack: the hot
+  // loop reads locals instead of paying a TLS lookup per bit, and two threads
+  // decoding at the same time simply own two records
+  tzinfl = record
+    rp: pbyte;                        // input buffer
+    si, sl: longint;
+    bitbuf: qword;                    // bit accumulator, LSB-first
+    bitcnt: longint;
+    ob: pbyte;                        // output buffer
+    rop, rcap: longint;
+    er: longint;                      // hard error
+    aborted: boolean;
+    usereader, usewriter, usecb: boolean;   // the callbacks themselves stay in threadvars
+    fmt: dword;                       // detected container, picks which checksum to maintain
+    total: qword;                     // total input size for progress (0 = unknown)
+    inpos, outpos: qword;             // input consumed / output flushed
+    crc, adler: dword;                // running checksums of the flushed output
+    lit, dist: tzhuff;
+    lens: array[320] of byte;
+  end;
+
+// streaming hooks; read once per refill or per token, never per byte
 threadvar
-  rp: PByte;
-  si, sl, rbb, rbc, rop, rcap, er: longint;
-  ob: pointer;
-  lc, dc: array[16] of word;
-  ls: array[288] of word;
-  ds: array[32] of word;
-  lens: array[320] of byte;
-  // decoder streaming state (zdecompress_stream); zsreader/zswriter nil = one-shot
   zsreader: tzreader;
   zswriter: tzwriter;
-  zscb: tzprogress;     // progress hook while streaming (zprogress is detached then)
-  zsfmt: dword;         // detected container, picks which checksum to maintain
-  zstotal: qword;       // total input size for progress (0 = unknown)
-  zsin, zsout: qword;   // input consumed / output flushed
-  zscrc, zsadler: dword;// running checksums of the flushed output
+  zscb: tzprogress;
 
 // refill the streaming input buffer; false when the source is dry
-function refill: boolean;
+function zrefill(var st: tzinfl): boolean;
 begin
   result := false;
-  if zsreader = nil then exit;
-  sl := zsreader(rp, ZSINBUF);
-  si := 0;
-  if sl = 0 then exit;
-  zsin := zsin + sl;
-  if (zscb <> nil) and (not zscb(zsin, zstotal, zsout)) then begin abort := true; exit; end;
+  if not st.usereader then exit;
+  st.sl := zsreader(st.rp, ZSINBUF);
+  st.si := 0;
+  if st.sl = 0 then exit;
+  st.inpos := st.inpos + st.sl;
+  if st.usecb and (not zscb(st.inpos, st.total, st.outpos)) then begin st.aborted := true; exit; end;
   result := true;
 end;
 
 // one input byte; refills in streaming mode, flags an error when input runs dry
-function nb: longint;
+function nb(var st: tzinfl): longint;
 begin
-  if si >= sl then
-    if not refill then begin er := 1; exit(0); end;
-  result := rp[si]; inc(si);
+  if st.si >= st.sl then
+    if not zrefill(st) then begin st.er := 1; exit(0); end;
+  result := st.rp[st.si]; inc(st.si);
 end;
 
-// one bit, LSB-first
-function gb: longint;
+// top up the bit accumulator to at least 57 bits, eight at a time where the
+// input allows it. a dry input is not an error here: the caller checks bitcnt
+// against the bits it actually consumes
+procedure zfill(var st: tzinfl);
 begin
-  if rbc = 0 then begin
-    rbb := nb;
-    if er <> 0 then exit(0);
-    rbc := 8;
+  if st.bitcnt > 56 then exit;
+  // bits above bitcnt are whatever the last bulk read pulled in past the byte it
+  // counted; drop them, the bytes they came from are read again below
+  st.bitbuf := st.bitbuf and ((qword(1) shl st.bitcnt) - 1);
+  if st.si + 8 <= st.sl then begin
+    st.bitbuf := st.bitbuf or (PQWord(st.rp + st.si)^ shl st.bitcnt);
+    inc(st.si, (63 - st.bitcnt) shr 3);
+    st.bitcnt := st.bitcnt or 56;
+    exit;
   end;
-  result := rbb and 1; rbb := rbb shr 1; dec(rbc);
+  repeat
+    while (st.bitcnt <= 56) and (st.si < st.sl) do begin
+      st.bitbuf := st.bitbuf or (qword(st.rp[st.si]) shl st.bitcnt);
+      inc(st.si); inc(st.bitcnt, 8);
+    end;
+    if st.bitcnt > 56 then break;
+  until not zrefill(st);
 end;
 
-// n bits
-function gn(n: longint): longint;
+// n bits, LSB-first
+function gn(var st: tzinfl; n: longint): longint;
 begin
-  result := 0;
-  for var i := 0 to n-1 do result := result or (gb shl i);
+  if n = 0 then exit(0);
+  if st.bitcnt < n then zfill(st);
+  if st.bitcnt < n then begin st.er := 1; exit(0); end;
+  result := longint(st.bitbuf and ((qword(1) shl n) - 1));
+  st.bitbuf := st.bitbuf shr n; dec(st.bitcnt, n);
 end;
 
-// canonical Huffman decode; dist picks the distance table, else lit/len
-function hd(dist: boolean): longint;
+// one bit
+function gb(var st: tzinfl): longint;
 begin
-  var cp: PWord := @lc[0]; var yp: PWord := @ls[0];
-  if dist then begin cp := @dc[0]; yp := @ds[0]; end;
+  if st.bitcnt < 1 then zfill(st);
+  if st.bitcnt < 1 then begin st.er := 1; exit(0); end;
+  result := longint(st.bitbuf and 1);
+  st.bitbuf := st.bitbuf shr 1; dec(st.bitcnt);
+end;
+
+// drop the partial bits, leaving the accumulator on a byte boundary
+procedure zalign(var st: tzinfl);
+begin
+  var drop := st.bitcnt and 7;
+  st.bitbuf := st.bitbuf shr drop;
+  dec(st.bitcnt, drop);
+end;
+
+// huffman decode: one table lookup for codes up to IFAST bits, canonical walk
+// for the rest
+function hd(var st: tzinfl; var t: tzhuff): longint;
+begin
+  if st.bitcnt < 15 then zfill(st);
+  var e := t.fast[longint(st.bitbuf) and IFASTMASK];
+  if e <> 0 then begin
+    var n := longint(e shr 9);
+    if st.bitcnt < n then begin st.er := 1; exit(0); end;
+    st.bitbuf := st.bitbuf shr n; dec(st.bitcnt, n);
+    exit(e and 511);
+  end;
   var code := 0; var first := 0; var idx := 0;
   for var k := 1 to 15 do begin
-    code := code or gb;
-    var c := cp[k];
-    if code - c < first then exit(yp[idx + code - first]);
+    code := code or longint((st.bitbuf shr (k-1)) and 1);
+    var c := t.cnt[k];
+    if code - c < first then begin
+      if st.bitcnt < k then begin st.er := 1; exit(0); end;
+      st.bitbuf := st.bitbuf shr k; dec(st.bitcnt, k);
+      exit(t.sym[idx + code - first]);
+    end;
     idx := idx + c; first := (first + c) shl 1; code := code shl 1;
   end;
-  er := 1;                                        // 15 bits, no valid code
+  st.er := 1;                                     // 15 bits, no valid code
   result := 0;
 end;
 
-// build count[]/symbol[] for the lit or dist table from lens[off..off+n-1]
-procedure mk(dist: boolean; off, n: longint);
+// build one huffman table from the code lengths L[0..n-1]
+procedure mk(var t: tzhuff; L: pbyte; n: longint);
 begin
-  var cp: PWord := @lc[0]; var yp: PWord := @ls[0];
-  if dist then begin cp := @dc[0]; yp := @ds[0]; end;
+  FillChar(t.cnt, sizeof(t.cnt), 0);
+  for var i := 0 to n-1 do inc(t.cnt[L[i]]);
   var ofs: array[17] of word;
-  for var i := 0 to 15 do cp[i] := 0;
-  for var i := 0 to n-1 do inc(cp[lens[off+i]]);
   ofs[1] := 0;
-  for var i := 1 to 15 do ofs[i+1] := ofs[i] + cp[i];
+  for var i := 1 to 15 do ofs[i+1] := ofs[i] + t.cnt[i];
   for var i := 0 to n-1 do
-    if lens[off+i] <> 0 then begin yp[ofs[lens[off+i]]] := i; inc(ofs[lens[off+i]]); end;
+    if L[i] <> 0 then begin t.sym[ofs[L[i]]] := i; inc(ofs[L[i]]); end;
+  // fast lookup: a code of k bits owns every index whose low k bits match it,
+  // and the stream reads bits LSB-first, so the canonical code goes in reversed
+  FillChar(t.fast, sizeof(t.fast), 0);
+  var code := 0; var idx := 0;
+  for var k := 1 to 15 do begin
+    if (k <= IFAST) and (t.cnt[k] > 0) then
+      for var j := 0 to t.cnt[k]-1 do begin
+        var q := rev(code + j, k);
+        var v := word((k shl 9) or t.sym[idx + j]);
+        while q < IFASTSIZE do begin t.fast[q] := v; inc(q, 1 shl k); end;
+      end;
+    idx := idx + t.cnt[k];
+    code := (code + t.cnt[k]) shl 1;
+  end;
+end;
+
+// make room for n more output bytes
+procedure zneed(var st: tzinfl; n: longint);
+begin
+  if st.rop + n <= st.rcap then exit;
+  if st.rcap = 0 then st.rcap := 4096;
+  while st.rcap < st.rop + n do st.rcap := st.rcap * 2;
+  ReAllocMem(st.ob, st.rcap);
 end;
 
 // flush decoder output to the sink, keeping the back-reference window unless last
-procedure oflush(last: boolean);
+procedure oflush(var st: tzinfl; last: boolean);
 begin
-  var n := rop;
-  if not last then n := rop - WS;
+  var n := st.rop;
+  if not last then n := st.rop - WS;
   if n <= 0 then exit;
-  if zsfmt = ZFLATE_GZIP then zscrc := crc32b(zscrc, ob, n)
-  else if zsfmt = ZFLATE_ZLIB then zsadler := adler32(zsadler, ob, n);
-  zsout := zsout + n;
-  if not zswriter(ob, n) then begin abort := true; er := 1; exit; end;
-  if not last then Move(PByte(ob)[n], ob^, rop - n);
-  rop := rop - n;
+  if st.fmt = ZFLATE_GZIP then st.crc := crc32b(st.crc, st.ob, n)
+  else if st.fmt = ZFLATE_ZLIB then st.adler := adler32(st.adler, st.ob, n);
+  st.outpos := st.outpos + n;
+  if not zswriter(st.ob, n) then begin st.aborted := true; st.er := 1; exit; end;
+  if not last then Move(st.ob[n], st.ob^, st.rop - n);
+  st.rop := st.rop - n;
 end;
 
-// append one output byte, doubling the heap buffer as needed
-procedure em(b: longint);
+// report progress; one-shot reports its own buffer positions, streaming the
+// totals accumulated across refills and flushes
+function zprog(var st: tzinfl): boolean;
 begin
-  if (zswriter <> nil) and (rop >= ZSOUTMAX) then oflush(false);
-  if rop >= rcap then begin if rcap = 0 then rcap := 256 else rcap := rcap * 2; ReAllocMem(ob, rcap); end;
-  PByte(ob)[rop] := b; inc(rop);
+  if st.usereader then result := zscb(st.inpos, st.total, st.outpos)
+  else result := zscb(st.si, st.sl, st.rop);
+  if not result then begin st.aborted := true; st.er := 1; end;
 end;
 
-// decode DEFLATE blocks until the final one, over the shared decoder state
-procedure inflateLoop;
+// copy n stored bytes to the output: whatever whole bytes sit in the bit
+// accumulator first, then straight out of the input buffer
+procedure zstored(var st: tzinfl; n: longint);
 begin
-  var nx := 0;
+  zneed(st, n);
+  while n > 0 do begin
+    if st.bitcnt >= 8 then begin
+      st.ob[st.rop] := byte(st.bitbuf); inc(st.rop);
+      st.bitbuf := st.bitbuf shr 8; dec(st.bitcnt, 8);
+      dec(n);
+    end else begin
+      if st.si >= st.sl then
+        if not zrefill(st) then begin st.er := 1; exit; end;
+      var k := st.sl - st.si; if k > n then k := n;
+      Move(st.rp[st.si], st.ob[st.rop], k);
+      inc(st.si, k); inc(st.rop, k); dec(n, k);
+    end;
+  end;
+end;
+
+// decode DEFLATE blocks until the final one
+procedure inflateLoop(var st: tzinfl);
+begin
   var final := 0;
   repeat
-    final := gb;
-    var bt := gn(2);
-    if bt = 3 then er := 1;                     // reserved block type
-    if er <> 0 then break;
+    final := gb(st);
+    var bt := gn(st, 2);
+    if bt = 3 then st.er := 1;                    // reserved block type
+    if st.er <> 0 then break;
+    if st.usecb and (not zprog(st)) then break;
     if bt = 0 then begin
-      if (zprogress <> nil) and (not zprogress(si, sl, rop)) then begin abort := true; er := 1; break; end;
-      rbc := 0;                                 // align to byte boundary
-      var lo := nb; var hi := nb;
-      var n := lo or (hi shl 8);                // LEN then one's-complement check
-      lo := nb; hi := nb;
-      if (er <> 0) or ((n xor (lo or (hi shl 8))) <> $FFFF) then begin er := 1; break; end;
-      for var k := 0 to n-1 do begin
-        em(nb);
-        if er <> 0 then break;
-      end;
-      if er <> 0 then break;
+      zalign(st);
+      var n := gn(st, 16);                      // LEN then one's-complement check
+      var m := gn(st, 16);
+      if (st.er <> 0) or ((n xor m) <> $FFFF) then begin st.er := 1; break; end;
+      if st.usewriter and (st.rop >= ZSOUTMAX) then oflush(st, false);
+      zstored(st, n);
+      if st.er <> 0 then break;
     end else begin
       if bt = 1 then begin
-        FillChar(lens[0], 144, 8); FillChar(lens[144], 112, 9); FillChar(lens[256], 24, 7); FillChar(lens[280], 8, 8);
-        mk(false, 0, 288);
-        FillChar(lens[0], 30, 5);
-        mk(true, 0, 30);
+        FillChar(st.lens[0], 144, 8); FillChar(st.lens[144], 112, 9); FillChar(st.lens[256], 24, 7); FillChar(st.lens[280], 8, 8);
+        mk(st.lit, @st.lens[0], 288);
+        FillChar(st.lens[0], 30, 5);
+        mk(st.dist, @st.lens[0], 30);
       end else begin
         // dynamic header: build the code-length table, then the lit+dist lengths
-        var hlit := gn(5) + 257;
-        var hdist := gn(5) + 1;
-        var hclen := gn(4) + 4;
-        if (hlit > 286) or (hdist > 30) then begin er := 1; break; end;
-        FillChar(lens[0], 19, 0);
-        for var i := 0 to hclen-1 do lens[CO[i]] := gn(3);
-        if er <> 0 then break;
-        mk(false, 0, 19);
+        var hlit := gn(st, 5) + 257;
+        var hdist := gn(st, 5) + 1;
+        var hclen := gn(st, 4) + 4;
+        if (hlit > 286) or (hdist > 30) then begin st.er := 1; break; end;
+        FillChar(st.lens[0], 19, 0);
+        for var i := 0 to hclen-1 do st.lens[CO[i]] := gn(st, 3);
+        if st.er <> 0 then break;
+        mk(st.lit, @st.lens[0], 19);
         var i := 0;
-        while (i < hlit + hdist) and (er = 0) do begin
-          var s := hd(false);
-          if er <> 0 then break;
-          if s < 16 then begin lens[i] := s; inc(i); end
+        while (i < hlit + hdist) and (st.er = 0) do begin
+          var s := hd(st, st.lit);
+          if st.er <> 0 then break;
+          if s < 16 then begin st.lens[i] := s; inc(i); end
           else begin
             var r := 0; var v := 0;
             if s = 16 then begin
-              if i = 0 then begin er := 1; break; end;
-              r := gn(2)+3; v := lens[i-1];
-            end else if s = 17 then r := gn(3)+3
-            else r := gn(7)+11;
-            if i + r > hlit + hdist then begin er := 1; break; end;
-            FillChar(lens[i], r, v); inc(i, r);
+              if i = 0 then begin st.er := 1; break; end;
+              r := gn(st, 2)+3; v := st.lens[i-1];
+            end else if s = 17 then r := gn(st, 3)+3
+            else r := gn(st, 7)+11;
+            if i + r > hlit + hdist then begin st.er := 1; break; end;
+            FillChar(st.lens[i], r, v); inc(i, r);
           end;
         end;
-        if er <> 0 then break;
-        mk(true, hlit, hdist);
-        mk(false, 0, hlit);
+        if st.er <> 0 then break;
+        mk(st.dist, @st.lens[hlit], hdist);
+        mk(st.lit, @st.lens[0], hlit);
       end;
       // symbol loop: literals and (length, distance) matches until end-of-block
+      var nx := 0;
       repeat
-        if (zprogress <> nil) and (rop >= nx) then begin
-          nx := rop + 65_536;
-          if not zprogress(si, sl, rop) then begin abort := true; er := 1; break; end;
+        if st.usewriter and (st.rop >= ZSOUTMAX) then oflush(st, false);
+        if st.usecb and (st.rop >= nx) then begin
+          nx := st.rop + 65_536;
+          if not zprog(st) then break;
         end;
-        var s := hd(false);
-        if er <> 0 then break;
-        if s < 256 then em(s)
-        else if s = 256 then break
+        zneed(st, 258 + ISLACK);
+        var s := hd(st, st.lit);
+        if st.er <> 0 then break;
+        if s < 256 then begin
+          st.ob[st.rop] := s; inc(st.rop);
+        end else if s = 256 then break
         else begin
           s := s - 257;
-          if s > 28 then begin er := 1; break; end;
-          var ln := LB[s] + gn(LE[s]);
-          var d := hd(true);
-          if er <> 0 then break;
-          var dist := DB[d] + gn(DE[d]);
-          if (er <> 0) or (dist > rop) then begin er := 1; break; end;  // before stream start
-          while ln > 0 do begin em(PByte(ob)[rop - dist]); dec(ln); end;
+          if s > 28 then begin st.er := 1; break; end;
+          var ln := LB[s] + gn(st, LE[s]);
+          var d := hd(st, st.dist);
+          if st.er <> 0 then break;
+          var dist := DB[d] + gn(st, DE[d]);
+          if (st.er <> 0) or (dist > st.rop) then begin st.er := 1; break; end;  // before stream start
+          var src := st.ob + st.rop - dist;
+          var dst := st.ob + st.rop;
+          inc(st.rop, ln);
+          // 8 bytes at a time once the source is far enough back for the chunks
+          // not to overlap; the slack in the buffer covers the overshoot
+          if dist >= 8 then
+            while ln > 0 do begin PQWord(dst)^ := PQWord(src)^; inc(dst, 8); inc(src, 8); dec(ln, 8); end
+          else
+            while ln > 0 do begin dst^ := src^; inc(dst); inc(src); dec(ln); end;
         end;
       until false;
     end;
-  until (final <> 0) or (er <> 0);
+  until (final <> 0) or (st.er <> 0);
+end;
+
+// set up a decoder over a whole input buffer, no streaming hooks
+procedure zinit(out st: tzinfl; data: pointer; size: dword);
+begin
+  st.rp := data; st.sl := size; st.si := 0;
+  st.bitbuf := 0; st.bitcnt := 0;
+  st.ob := nil; st.rop := 0; st.rcap := 0;
+  st.er := 0; st.aborted := false;
+  st.usereader := false; st.usewriter := false;
+  st.fmt := ZFLATE_RAW;
+  st.total := size; st.inpos := 0; st.outpos := 0;
+  st.crc := 0; st.adler := 1;
+  zscb := zprogress;
+  st.usecb := zscb <> nil;
 end;
 
 // decompress a raw DEFLATE stream; handles every block type (stored, fixed, dynamic)
 function unpackRaw(data: pointer; size: dword; out output: pointer; out outputsize: dword): integer;
 begin
-  output := nil; outputsize := 0; abort := false;
+  output := nil; outputsize := 0;
   if (data = nil) or (size = 0) then exit(ZFLATE_EINFLATE);
-  rp := data; sl := size;
-  si := 0; rbb := 0; rbc := 0; er := 0;
-  ob := nil; rcap := 0; rop := 0;
+  var st: tzinfl;
+  zinit(st, data, size);
+  // the output size is unknown up front, but four bytes out per byte in is a
+  // fair first guess and saves most of the doubling
+  var guess: int64 := int64(size) * 4;
+  if guess > 16*1024*1024 then guess := 16*1024*1024;
+  zneed(st, longint(guess));
   try
-    inflateLoop;
+    inflateLoop(st);
   except
-    er := 1;
+    st.er := 1;
   end;
-  if er <> 0 then begin
-    if ob <> nil then begin FreeMem(ob); ob := nil; end;
-    if abort then exit(ZFLATE_EABORTED);
+  if st.er <> 0 then begin
+    if st.ob <> nil then FreeMem(st.ob);
+    if st.aborted then exit(ZFLATE_EABORTED);
     exit(ZFLATE_EINFLATE);
   end;
-  if zprogress <> nil then zprogress(sl, sl, rop);
-  output := ob; outputsize := rop;
+  if st.usecb then zscb(st.sl, st.sl, st.rop);
+  if st.rop > 0 then ReAllocMem(st.ob, st.rop);   // hand back the guess that went unused
+  output := st.ob; outputsize := st.rop;
   result := ZFLATE_OK;
 end;
 
 // consume the container header sequentially (streaming)
-procedure skipHeader;
+procedure skipHeader(var st: tzinfl);
 begin
-  if zsfmt = ZFLATE_ZLIB then begin nb; nb; end
-  else if zsfmt = ZFLATE_GZIP then begin
-    nb; nb; nb;
-    var flags := nb;
-    for var i := 1 to 6 do nb;                                // mtime, xfl, os
+  if st.fmt = ZFLATE_ZLIB then gn(st, 16)
+  else if st.fmt = ZFLATE_GZIP then begin
+    gn(st, 24);
+    var flags := gn(st, 8);
+    gn(st, 24); gn(st, 24);                                   // mtime, xfl, os
     // extra field
     if (flags and $04) <> 0 then begin
-      var lo := nb; var hi := nb;
-      for var i := 1 to lo or (hi shl 8) do begin
-        nb;
-        if er <> 0 then exit;
+      var n := gn(st, 16);
+      for var i := 1 to n do begin
+        gn(st, 8);
+        if st.er <> 0 then exit;
       end;
     end;
-    if (flags and $08) <> 0 then while (nb <> 0) and (er = 0) do ;   // filename
-    if (flags and $10) <> 0 then while (nb <> 0) and (er = 0) do ;   // comment
-    if (flags and $02) <> 0 then begin nb; nb; end;                  // header crc16
+    if (flags and $08) <> 0 then while (gn(st, 8) <> 0) and (st.er = 0) do ;   // filename
+    if (flags and $10) <> 0 then while (gn(st, 8) <> 0) and (st.er = 0) do ;   // comment
+    if (flags and $02) <> 0 then gn(st, 16);                                   // header crc16
   end;
 end;
 
 // read and verify the container footer against the running checksums (streaming)
-function checkFooter: integer;
+function checkFooter(var st: tzinfl): integer;
 begin
   result := ZFLATE_OK;
-  rbc := 0;                                       // footer starts at the next byte
-  if zsfmt = ZFLATE_ZLIB then begin
+  zalign(st);                                     // footer starts at the next byte
+  if st.fmt = ZFLATE_ZLIB then begin
     // adler32, big-endian
     var a: dword := 0;
-    for var i := 1 to 4 do a := (a shl 8) or dword(nb);
-    if er <> 0 then exit(ZFLATE_EINFLATE);
-    if a <> zsadler then result := ZFLATE_ECHECKSUM;
-  end else if zsfmt = ZFLATE_GZIP then begin
+    for var i := 1 to 4 do a := (a shl 8) or dword(gn(st, 8));
+    if st.er <> 0 then exit(ZFLATE_EINFLATE);
+    if a <> st.adler then result := ZFLATE_ECHECKSUM;
+  end else if st.fmt = ZFLATE_GZIP then begin
     // crc32 then size, little-endian
     var c: dword := 0;
-    for var i := 0 to 3 do c := c or (dword(nb) shl (8*i));
+    for var i := 0 to 3 do c := c or (dword(gn(st, 8)) shl (8*i));
     var isize: dword := 0;
-    for var i := 0 to 3 do isize := isize or (dword(nb) shl (8*i));
-    if er <> 0 then exit(ZFLATE_EINFLATE);
-    if isize <> dword(zsout) then exit(ZFLATE_EOUTPUTSIZE);
-    if c <> zscrc then result := ZFLATE_ECHECKSUM;
+    for var i := 0 to 3 do isize := isize or (dword(gn(st, 8)) shl (8*i));
+    if st.er <> 0 then exit(ZFLATE_EINFLATE);
+    if isize <> dword(st.outpos) then exit(ZFLATE_EOUTPUTSIZE);
+    if c <> st.crc then result := ZFLATE_ECHECKSUM;
   end;
 end;
 
 function zdecompress_stream(reader: tzreader; writer: tzwriter; totalsize: qword = 0): integer;
 begin
   if (reader = nil) or (writer = nil) then exit(ZFLATE_EINFLATE);
-  abort := false;
-  zsreader := reader; zswriter := writer;
-  zscb := zprogress; zprogress := nil;            // the one-shot progress sites see buffer-local numbers
-  zstotal := totalsize; zsin := 0; zsout := 0; zscrc := 0; zsadler := 1; zsfmt := ZFLATE_RAW;
+  var st: tzinfl;
   var inbuf: pbyte := GetMem(ZSINBUF);
-  rp := inbuf; si := 0; sl := 0; rbb := 0; rbc := 0; er := 0;
-  ob := nil; rcap := 0; rop := 0;
+  zinit(st, inbuf, 0);
+  st.usereader := true; st.usewriter := true;
+  st.total := totalsize;
+  zsreader := reader; zswriter := writer;
   result := ZFLATE_EINFLATE;
   try
     // buffer enough bytes to sniff the container type
-    while sl < 3 do begin
-      var got := reader(rp + sl, ZSINBUF - sl);
+    while st.sl < 3 do begin
+      var got := reader(inbuf + st.sl, ZSINBUF - st.sl);
       if got = 0 then break;
-      inc(sl, got);
+      inc(st.sl, got);
     end;
-    zsin := sl;
-    if (sl >= 3) and (rp[0] = $1f) and (rp[1] = $8b) and (rp[2] = 8) then zsfmt := ZFLATE_GZIP
-    else if (sl >= 2) and ((rp[0] and $0f) = 8) and ((rp[0] shr 4) <= 7) and ((rp[1] and $20) = 0) and ((rp[0]*256 + rp[1]) mod 31 = 0) then zsfmt := ZFLATE_ZLIB;
-    skipHeader;
-    if er = 0 then inflateLoop;
-    if er = 0 then oflush(true);
-    if er = 0 then result := checkFooter;
+    st.inpos := st.sl;
+    if (st.sl >= 3) and (inbuf[0] = $1f) and (inbuf[1] = $8b) and (inbuf[2] = 8) then st.fmt := ZFLATE_GZIP
+    else if (st.sl >= 2) and ((inbuf[0] and $0f) = 8) and ((inbuf[0] shr 4) <= 7) and ((inbuf[1] and $20) = 0) and ((inbuf[0]*256 + inbuf[1]) mod 31 = 0) then st.fmt := ZFLATE_ZLIB;
+    skipHeader(st);
+    if st.er = 0 then inflateLoop(st);
+    if st.er = 0 then oflush(st, true);
+    if st.er = 0 then result := checkFooter(st);
   except
-    er := 1; result := ZFLATE_EINFLATE;
+    st.er := 1; result := ZFLATE_EINFLATE;
   end;
-  if abort then result := ZFLATE_EABORTED;
-  if (result = ZFLATE_OK) and (zscb <> nil) then zscb(zsin, zstotal, zsout);
-  if ob <> nil then begin FreeMem(ob); ob := nil; end;
+  if st.aborted then result := ZFLATE_EABORTED;
+  if (result = ZFLATE_OK) and st.usecb then zscb(st.inpos, st.total, st.outpos);
+  if st.ob <> nil then FreeMem(st.ob);
   FreeMem(inbuf);
-  zsreader := nil; zswriter := nil; zsfmt := ZFLATE_RAW;
-  zprogress := zscb; zscb := nil;
+  zsreader := nil; zswriter := nil; zscb := nil;
 end;
 
 // ----- container wrappers -----
