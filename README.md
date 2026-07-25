@@ -1,6 +1,6 @@
 # zflate
 
-Compress and decompress buffers, strings and files like in PHP, in one line. The whole DEFLATE codec lives inside the unit: no zlib, no external libraries, nothing but the RTL (`uses` is empty on Windows, `cthreads` on unix for the threaded path). Adding [zflate.pas](src/zflate.pas) to a program grows the binary by about 35 kB.
+Compress and decompress buffers, strings and files like in PHP, in one line. The whole DEFLATE codec lives inside the unit: no zlib, no external libraries, nothing but the RTL (`uses` is empty on Windows, `cthreads` on unix for the threaded path). Adding [zflate.pas](src/zflate.pas) to a program grows the binary by about 26 kB when you only call the one-shot functions, 45 kB with the streaming and threaded paths linked in as well.
 
 > **Requires a compiler that understands `{$mode unleashed}`.** The units and the examples below lean on inline variables, tuples, match expressions, function references and parallel for, so a stock compiler will not build them.
 
@@ -82,7 +82,7 @@ Named constants: `ZFLATE_STORE` (0), `ZFLATE_FASTEST` (1), `ZFLATE_DEFAULT` (5),
 
 | level | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
 |--|--|--|--|--|--|--|--|--|--|--|
-| KB out | 4096 | 718 | 679 | 600 | 642 | 586 | 543 | 526 | 519 | 519 |
+| KB out | 4096 | 717 | 678 | 598 | 640 | 585 | 542 | 525 | 518 | 518 |
 
 The curve is not strictly monotonic - level 4 is the first lazy-matching level and can land slightly behind level 3's deeper greedy search, and 8 and 9 differ only in how long they keep searching. That is how zlib behaves too; the four knobs per level come from its tuning table.
 
@@ -147,7 +147,7 @@ The compressor takes the input in 1 MB chunks, each becomes its own DEFLATE bloc
 
 ## Multithreading
 
-Codec state is per-thread (`threadvar`), so different threads can compress and decompress independently with no locking. On top of that, every compressing function can split the work across worker threads. Set the `zuse_threads` threadvar before the call:
+Codec state belongs to the call, not to the unit, so different threads can compress and decompress independently with no locking. On top of that, every compressing function can split the work across worker threads. Set the `zuse_threads` threadvar before the call:
 
 ```pascal
 zuse_threads := 4;                    // 0 or 1 = sequential (default), N = N workers
@@ -156,14 +156,14 @@ var packed := gzencode(hugeString);   // one-shot, streaming and file APIs all h
 
 Each 1 MB chunk is compressed on its own thread into an independent, byte-aligned block; the chunks are emitted in order, so the output is an ordinary gzip/zlib/deflate stream that any decoder reads. Inputs of a chunk or less never spawn anything, so leaving `zuse_threads` high costs nothing on small strings.
 
-Measured on a 16-core desktop, 96 MB of text at level 9, compiled with `-O2` ([examples/threads.pp](examples/threads.pp) reproduces it):
+Measured on a 16-core desktop, 96 MB of text at level 9, compiled with `-O3` ([examples/threads.pp](examples/threads.pp) reproduces it):
 
 | threads | time | speed | speedup | ratio |
 |--|--|--|--|--|
-| 1 | 7.2 s | 13.3 MB/s | 1.0x | 12.7% |
-| 2 | 3.8 s | 25.0 MB/s | 1.9x | 12.7% |
-| 4 | 2.1 s | 44.8 MB/s | 3.4x | 12.7% |
-| 8 | 1.4 s | 70.6 MB/s | 5.3x | 12.7% |
+| 1 | 6.9 s | 14.0 MB/s | 1.0x | 12.65% |
+| 2 | 3.8 s | 25.6 MB/s | 1.8x | 12.66% |
+| 4 | 2.1 s | 46.2 MB/s | 3.3x | 12.66% |
+| 8 | 1.3 s | 74.9 MB/s | 5.4x | 12.66% |
 
 The ratio column is what threading costs you: 461 bytes on 96 MB, or 0.0005%, for the markers that let the blocks be written independently.
 
@@ -173,22 +173,26 @@ Decompression is inherently sequential (a generic DEFLATE stream has no block in
 
 ## Performance
 
-Single core, gzip, the same 96 MB payload and `-O2` build as the table above:
+Single core, gzip, the same 96 MB payload and `-O3` build as the table above:
 
-| level | 1 | 5 (default) | 6 | 9 | decompress |
-|--|--|--|--|--|--|
-| speed | 93 MB/s | 66 MB/s | 33 MB/s | 13 MB/s | 68 MB/s |
-| ratio | 17.5% | 14.3% | 13.2% | 12.7% | - |
+| level | 0 | 1 | 2 | 3 | 4 | 5 (default) | 6 | 7 | 8 | 9 |
+|--|--|--|--|--|--|--|--|--|--|--|
+| compress | 361 MB/s | 143 MB/s | 137 MB/s | 102 MB/s | 110 MB/s | 84 MB/s | 37 MB/s | 23 MB/s | 14 MB/s | 14 MB/s |
+| decompress | 362 MB/s | 220 MB/s | 219 MB/s | 246 MB/s | 219 MB/s | 237 MB/s | 246 MB/s | 246 MB/s | 246 MB/s | 246 MB/s |
+| ratio | 100% | 17.5% | 16.6% | 14.6% | 15.6% | 14.3% | 13.2% | 12.8% | 12.7% | 12.7% |
 
-That is the shape of the level knob: going from 1 to 9 costs 7x the time and buys 27% off the output. The default sits at 5 because the curve flattens hard after it.
+That is the shape of the level knob: going from 1 to 9 costs 10x the time and buys 28% off the output. The default sits at 5 because the curve flattens hard after it, and 8 and 9 land on the same output here. Decompression barely cares about the level the data was written at; level 0 stores, so both sides are just a memory copy.
 
-Compiler flags matter more than you would expect here: the same code without `-O2` does about a third less throughput, so build with optimizations on if you care about it.
+Compiler flags matter more than you would expect here: the same code without optimizations does about 40% less throughput on both sides. `-O2` and `-O3` land in the same place, so `-O2` is enough.
 
 Where the speed comes from, in case you are porting or tuning this:
 
+- codec state lives in a record owned by the call rather than in unit or thread variables, so the hot loops reach it through a register instead of paying a TLS lookup per access
+- the decoder pulls bits out of a 64-bit accumulator refilled eight bytes at a time
+- huffman codes of up to 9 bits resolve in one table lookup, longer ones fall back to the canonical walk
+- back-references are copied eight bytes at a time whenever the distance allows it, and the bit writer empties four bytes at a time
 - the match finder runs once per block, not twice: the LZ pass records its tokens and the emit pass replays them
 - candidate matches are compared 8 bytes at a time, taking the first differing byte from the low set bit of the xor
-- the per-thread codec state is lifted into locals around the chain walk and the hash-chain inserts, which would otherwise pay a TLS lookup per iteration
 - length and distance code indexes come from lookup tables rather than a scan over the RFC base tables
 - crc32 is table-driven; the bitwise form was slower than the compressor it fed
 - the level knobs (chain length, nice length, good length, lazy matching) are zlib's tuning table
@@ -243,7 +247,7 @@ end;
 
 ## Checksums
 
-Both checksums the containers need are exported, and run at roughly 500 MB/s and 440 MB/s:
+Both checksums the containers need are exported, and run at roughly 550 MB/s and 440 MB/s:
 
 ```pascal
 function crc32b(crc: dword; data: pbyte; len: dword): dword;    // start with crc = 0
@@ -334,7 +338,7 @@ Each file in [examples/](examples) is a self-contained program: `fpc -Fu../src <
 ## Notes
 
 - The buffer/string/TBytes functions are one-shot and keep everything in memory; the `*_stream` functions and zflatefiles process data in chunks with constant memory use.
-- Codec state is per-thread (`threadvar`): safe to call from several threads at once, and `zuse_threads` fans the streaming compressors out across cores.
+- Codec state belongs to the call: safe to call from several threads at once, and `zuse_threads` fans the compressors out across cores.
 - Compression picks the smallest of stored / fixed / dynamic Huffman per block, with LZ77 over a 32 KiB window; the level tunes the search depth and lazy matching.
 
 ## License
