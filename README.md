@@ -69,22 +69,22 @@ function zdecompress(const bytes: TBytes): TBytes;
 
 ## Compression levels
 
-Every compressing function takes a `level` from 0 to 9, defaulting to 5. Level 0 stores without compressing, 1 is the fastest, 9 squeezes hardest; the level drives the hash-chain search depth, the match length that ends a search early, and whether lazy matching runs. The level is also advertised in the container header (zlib `FLEVEL`, gzip `XFL`), exactly like zlib does.
+Every compressing function takes a `level` from 0 to 9, defaulting to 4. Level 0 stores without compressing, 1 is the fastest, 9 squeezes hardest; the level drives the hash-chain search depth, the match length that ends a search early, the length past which an existing match cuts the search short, the length at which a match is good enough to stop working on, and whether lazy matching runs. The level is also advertised in the container header (zlib `FLEVEL`, gzip `XFL`), exactly like zlib does.
 
 ```pascal
-var plain := gzencode(data);                  // 5, the default
+var plain := gzencode(data);                  // 4, the default
 var fast := gzencode(data, ZFLATE_FASTEST);   // 1
 var small := gzencode(data, ZFLATE_BEST);     // 9
 var stored := gzencode(data, ZFLATE_STORE);   // 0, no compression
 ```
 
-Named constants: `ZFLATE_STORE` (0), `ZFLATE_FASTEST` (1), `ZFLATE_DEFAULT` (5), `ZFLATE_BEST` (9). Compressing 4 MB of text-like data lands like this ([examples/basic.pp](examples/basic.pp) prints the same table for its own payload):
+Named constants: `ZFLATE_STORE` (0), `ZFLATE_FASTEST` (1), `ZFLATE_DEFAULT` (4), `ZFLATE_BEST` (9). Compressing 4 MB of text-like data lands like this ([examples/basic.pp](examples/basic.pp) prints the same table for its own payload):
 
 | level | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
 |--|--|--|--|--|--|--|--|--|--|--|
-| KB out | 4096 | 717 | 678 | 598 | 640 | 585 | 542 | 525 | 518 | 518 |
+| KB out | 4096 | 730 | 646 | 602 | 571 | 550 | 545 | 525 | 519 | 518 |
 
-The curve is not strictly monotonic - level 4 is the first lazy-matching level and can land slightly behind level 3's deeper greedy search, and 8 and 9 differ only in how long they keep searching. That is how zlib behaves too; the four knobs per level come from its tuning table.
+The five knobs behind each level were not copied from zlib, they were measured: every combination was run over text, source code, log records and half-random data, and the ten levels are points off the resulting speed/size Pareto front, spaced about 1.35x in time per step. Output therefore shrinks with every level on all four, with no level costing more time than the one below it for a worse result.
 
 ## Streaming
 
@@ -175,13 +175,13 @@ Decompression is inherently sequential (a generic DEFLATE stream has no block in
 
 Single core, gzip, the same 96 MB payload and `-O3` build as the table above:
 
-| level | 0 | 1 | 2 | 3 | 4 | 5 (default) | 6 | 7 | 8 | 9 |
+| level | 0 | 1 | 2 | 3 | 4 (default) | 5 | 6 | 7 | 8 | 9 |
 |--|--|--|--|--|--|--|--|--|--|--|
-| compress | 361 MB/s | 143 MB/s | 137 MB/s | 102 MB/s | 110 MB/s | 84 MB/s | 37 MB/s | 23 MB/s | 14 MB/s | 14 MB/s |
-| decompress | 362 MB/s | 220 MB/s | 219 MB/s | 246 MB/s | 219 MB/s | 237 MB/s | 246 MB/s | 246 MB/s | 246 MB/s | 246 MB/s |
-| ratio | 100% | 17.5% | 16.6% | 14.6% | 15.6% | 14.3% | 13.2% | 12.8% | 12.7% | 12.7% |
+| compress | 384 MB/s | 158 MB/s | 131 MB/s | 102 MB/s | 73 MB/s | 49 MB/s | 36 MB/s | 24 MB/s | 18 MB/s | 14 MB/s |
+| decompress | 342 MB/s | 219 MB/s | 228 MB/s | 237 MB/s | 237 MB/s | 246 MB/s | 246 MB/s | 256 MB/s | 246 MB/s | 246 MB/s |
+| ratio | 100% | 17.8% | 15.8% | 14.7% | 14.0% | 13.4% | 13.3% | 12.8% | 12.7% | 12.7% |
 
-That is the shape of the level knob: going from 1 to 9 costs 10x the time and buys 28% off the output. The default sits at 5 because the curve flattens hard after it, and 8 and 9 land on the same output here. Decompression barely cares about the level the data was written at; level 0 stores, so both sides are just a memory copy.
+That is the shape of the level knob: going from 1 to 9 costs 11x the time and buys 29% off the output. The default sits at 4, one step past the halfway point of the ratio the ladder can reach and still above 70 MB/s. Decompression barely cares about the level the data was written at; level 0 stores, so both sides are just a memory copy.
 
 Compiler flags matter more than you would expect here: the same code without optimizations does about 40% less throughput on both sides. `-O2` and `-O3` land in the same place, so `-O2` is enough.
 
@@ -195,7 +195,7 @@ Where the speed comes from, in case you are porting or tuning this:
 - candidate matches are compared 8 bytes at a time, taking the first differing byte from the low set bit of the xor
 - length and distance code indexes come from lookup tables rather than a scan over the RFC base tables
 - crc32 is table-driven; the bitwise form was slower than the compressor it fed
-- the level knobs (chain length, nice length, good length, lazy matching) are zlib's tuning table
+- the level knobs (chain length, nice length, good length, lazy length, lazy matching) sit on a measured Pareto front rather than on a table borrowed from elsewhere
 
 ## Stream inspection
 
@@ -247,7 +247,7 @@ end;
 
 ## Checksums
 
-Both checksums the containers need are exported, and run at roughly 550 MB/s and 440 MB/s:
+Both checksums the containers need are exported, and run at roughly 510 MB/s and 440 MB/s:
 
 ```pascal
 function crc32b(crc: dword; data: pbyte; len: dword): dword;    // start with crc = 0
