@@ -48,7 +48,7 @@ begin
   writeln('original: ', length(s), ' bytes');
   for var lv := 0 to 9 do
     writeln('level ', lv, ': ', length(gzencode(s, lv)):8, ' bytes');
-  writeln('(level 0 stores, 1 is fastest, 9 compresses best and is the default)');
+  writeln('(level 0 stores, 1 is fastest, 9 compresses best, 4 is the default)');
   writeln;
 end;
 
