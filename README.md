@@ -1,6 +1,6 @@
 # zflate
 
-Compress and decompress buffers, strings and files like in PHP, in one line. The whole DEFLATE codec lives inside the unit: no zlib, no external libraries, nothing but the RTL (`uses` is empty on Windows, `cthreads` on unix for the threaded path). Adding [zflate.pas](src/zflate.pas) to a program grows the binary by about 26 kB when you only call the one-shot functions, 45 kB with the streaming and threaded paths linked in as well.
+Compress and decompress buffers, strings and files like in PHP, in one line. The whole DEFLATE codec lives inside the unit: no zlib, no external libraries, nothing but the RTL (`uses` is empty on Windows, `cthreads` on unix for the threaded path). Adding [zflate.pas](src/zflate.pas) to a program grows the binary by about 26 kB when you only call the one-shot functions, 45 kB with the streaming and threaded paths linked in as well - half of what the same program costs when it goes through FPC's paszlib instead, which it also outruns (see [against paszlib](#against-paszlib)).
 
 > **Requires a compiler that understands `{$mode unleashed}`.** The units and the examples below lean on inline variables, tuples, match expressions, function references and parallel for, so a stock compiler will not build them.
 
@@ -196,6 +196,41 @@ Where the speed comes from, in case you are porting or tuning this:
 - length and distance code indexes come from lookup tables rather than a scan over the RFC base tables
 - crc32 is table-driven; the bitwise form was slower than the compressor it fed
 - the level knobs (chain length, nice length, good length, lazy length, lazy matching) sit on a measured Pareto front rather than on a table borrowed from elsewhere
+
+## Against paszlib
+
+zflate started out as a wrapper over the zlib port that ships with FPC (`ZBase`, `ZInflate`, `ZDeflate`). The codec in this unit replaced it. Both versions linked into one program so the comparison runs on the same machine, the same build and the same payload: 32 MB of generated text, gzip, single thread.
+
+| level | zflate | paszlib | zflate ratio | paszlib ratio | zflate decompress | paszlib decompress |
+|--|--|--|--|--|--|--|
+| 0 | 363 MB/s | 35 MB/s | 100.0% | 100.0% | 392 MB/s | 42 MB/s |
+| 1 | 157 MB/s | 104 MB/s | 17.82% | 17.93% | 211 MB/s | 113 MB/s |
+| 2 | 124 MB/s | 106 MB/s | 15.77% | 17.07% | 224 MB/s | 126 MB/s |
+| 3 | 101 MB/s | 86 MB/s | 14.70% | 15.13% | 234 MB/s | 141 MB/s |
+| 4 | 75 MB/s | 77 MB/s | 13.95% | 15.37% | 238 MB/s | 132 MB/s |
+| 5 | 48 MB/s | 66 MB/s | 13.43% | 13.94% | 242 MB/s | 141 MB/s |
+| 6 | 35 MB/s | 38 MB/s | 13.30% | 12.96% | 243 MB/s | 148 MB/s |
+| 7 | 23 MB/s | 24 MB/s | 12.81% | 12.52% | 246 MB/s | 150 MB/s |
+| 8 | 18 MB/s | 15 MB/s | 12.66% | 12.36% | 249 MB/s | 148 MB/s |
+| 9 | 14 MB/s | 14 MB/s | 12.65% | 12.36% | 246 MB/s | 151 MB/s |
+
+Decompression is 1.7x to 2.1x faster at every level, and the gap does not depend on the level the data was written at. Level 0 is 10x: paszlib still walks its whole deflate state machine to emit stored blocks, this one recognises there is nothing to do and copies. The bottom half of the ladder wins on both axes at once - level 2 to 4 produce output 5% to 9% smaller at comparable speed, because the levels here were measured rather than inherited.
+
+From level 6 up paszlib still edges ahead on ratio, by 2.3% to 2.6% on this payload. That is the one place it is genuinely better: its match finder handles long matches more carefully than the plain 3-byte hash chain here does.
+
+The same sweep over 32 MB of Pascal and markdown sources tells the same story with a wider low end (level 1 is 1.8x faster, levels 2 and 3 produce 8% smaller output) and almost no high end left: from level 6 up paszlib is ahead by 0.13% to 0.27%.
+
+Every stream in both sweeps was decoded by both implementations, at every level, in both directions.
+
+Linked binary, minimal program calling `gzencode` and `gzdecode`, `-O3 -XX -CX -Xs`:
+
+| build | binary | added |
+|--|--|--|
+| baseline, no codec | 52 224 B | - |
+| zflate | 78 848 B | **26 624 B** |
+| paszlib-backed | 102 912 B | **50 688 B** |
+
+Half the code, no dependencies, and streaming, threading and progress callbacks that the wrapper never had.
 
 ## Stream inspection
 
