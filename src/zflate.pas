@@ -3,10 +3,10 @@
   system unit (plus cthreads on unix, for the threaded path).
 
   Every operation returns an integer code: ZFLATE_OK (0) on success, ZFLATE_E*
-  otherwise. No exception ever escapes this unit. Codec state is per-thread
-  (threadvar), so independent threads may compress/decompress at the same time
-  without interfering. zcompress_stream additionally splits the work across
-  zuse_threads worker threads. }
+  otherwise. No exception ever escapes this unit. Codec state belongs to the
+  call, not to the unit, so independent threads may compress/decompress at the
+  same time without interfering. zcompress_stream additionally splits the work
+  across zuse_threads worker threads. }
 
 { Copyright (c) 2023-2026 @fibodevy / https://github.com/fibodevy
   MIT licensed (see LICENSE). Free to use and modify; keep this notice
@@ -177,9 +177,6 @@ var
   DISTSYM: array[512] of byte;   // distance -> code index, zlib's two-range split
   CRCTAB: array[256] of dword;   // crc32 of each byte value, the standard table
 
-threadvar
-  abort: boolean;     // progress callback requested abort
-
 // ----- checksums -----
 
 // one table lookup per byte instead of eight shift/xor steps; the table costs 1 kB
@@ -203,46 +200,93 @@ end;
 
 // ----- deflate encoder -----
 
-// encoder state (per-thread: each worker of the parallel path owns a copy)
-threadvar
-  zlevel: longint;                               // active compression level, 0 = store
-  zchain, znice, zgood: longint;                 // search limits derived from zlevel
-  zlazy: boolean;                                // lazy matching derived from zlevel
-  sp: PByte;
-  slen, op, cap, bb, bc, mst: longint;           // mst: match start from fm
-  buf: pointer;
-  toks: pdword;                                  // LZ tokens of the current block
-  tokn: longint;                                 // tokens recorded
-  progbase, progtotal: qword;                    // progress reporting across chunks
-  head: array[HS] of longint;               // LZ77 hash chains
-  prev: array[WS] of longint;
-  fl: array[288] of longint;                  // lit/len + dist frequencies
-  fd: array[32] of longint;
-  llen, dlen: array[288] of byte;             // active code lengths (dyn or fixed)
-  lcode, dcode: array[288] of word;           // active codes (LSB-first)
-  FIXL: array[288] of byte;                   // fixed-Huffman code lengths
-  FIXD: array[32] of byte;
-  cf: array[19] of longint;                   // code-length alphabet
-  cllen: array[19] of byte;
-  clcode: array[19] of word;
-  lcount, dcount, numCL, rlen: longint;
-  clsym, clext, clxb: array[320] of byte;     // RLE'd code-length stream
-  comb: array[320] of byte;
-  hsym: array[288] of word;                   // Huffman builder scratch
-  hfrq: array[576] of longint;
-  hdad, hdep: array[576] of word;
-  hbl: array[17] of word;
+type
+  // encoder state. one record per compression job, so the hot loops read fields
+  // through a register instead of a TLS lookup, and the parallel path simply
+  // gives every worker its own record. too big for the stack (the hash chains
+  // alone are 256 kB), so it is heap allocated
+  tzdefl = record
+    level, chain, nice, good: longint;             // search effort for the active level
+    lazy: boolean;
+    aborted: boolean;                              // progress callback requested abort
+    usecb: boolean;
+    sp: pbyte;
+    slen, op, cap, mst: longint;                   // mst: match start from fm
+    bb: qword;                                     // bit accumulator, LSB-first
+    bc: longint;
+    buf: pointer;
+    toks: pdword;                                  // LZ tokens of the current block
+    tokn, tokcap: longint;
+    progbase, progtotal: qword;                    // progress reporting across chunks
+    head: array[HS] of longint;                    // LZ77 hash chains
+    prev: array[WS] of longint;
+    fl: array[288] of longint;                     // lit/len + dist frequencies
+    fd: array[32] of longint;
+    llen, dlen: array[288] of byte;                // active code lengths (dyn or fixed)
+    lcode, dcode: array[288] of word;              // active codes (LSB-first)
+    FIXL: array[288] of byte;                      // fixed-Huffman code lengths
+    FIXD: array[32] of byte;
+    cf: array[19] of longint;                      // code-length alphabet
+    cllen: array[19] of byte;
+    clcode: array[19] of word;
+    lcount, dcount, numCL, rlen: longint;
+    clsym, clext, clxb: array[320] of byte;        // RLE'd code-length stream
+    comb: array[320] of byte;
+    hsym: array[288] of word;                      // Huffman builder scratch
+    hfrq: array[576] of longint;
+    hdad, hdep: array[576] of word;
+    hbl: array[17] of word;
+  end;
+  pzdefl = ^tzdefl;
 
-// pick the search effort for a compression level; must run on the thread that
-// will do the compressing, the settings are per-thread
-procedure setLevel(level: dword);
+threadvar
+  // the record is a quarter of a megabyte, so each thread keeps one warm rather
+  // than allocating and releasing it per call. same footprint the per-thread
+  // arrays had before
+  zdcache: pzdefl;
+
+// encoder ready for a new job. only the scalars are initialised: every array is
+// filled before it is read, and zeroing 256 kB of hash chains per call would
+// cost more than the compression of a short string
+function znew: pzdefl;
+begin
+  result := zdcache;
+  if result = nil then begin
+    result := GetMem(sizeof(tzdefl));
+    result^.buf := nil; result^.cap := 0;
+    result^.toks := nil; result^.tokcap := 0;
+  end else
+    zdcache := nil;
+  with result^ do begin
+    level := 0; chain := 0; nice := 0; good := 0; lazy := false;
+    aborted := false; usecb := false;
+    sp := nil; slen := 0; op := 0; mst := 0;
+    bb := 0; bc := 0; tokn := 0;
+    progbase := 0; progtotal := 0;
+    lcount := 0; dcount := 0; numCL := 0; rlen := 0;
+  end;
+end;
+
+procedure zfree(e: pzdefl);
+begin
+  if e^.buf <> nil then FreeMem(e^.buf);
+  e^.buf := nil; e^.cap := 0;                   // the buffer may also have been handed to the caller
+  if zdcache = nil then zdcache := e            // keep it warm for the next call
+  else begin
+    if e^.toks <> nil then FreeMem(e^.toks);
+    FreeMem(e);
+  end;
+end;
+
+// pick the search effort for a compression level
+procedure setLevel(var e: tzdefl; level: dword);
 begin
   if level > 9 then level := 9;
-  zlevel := level;
-  zchain := LVCHAIN[level];
-  znice := LVNICE[level];
-  zgood := LVGOOD[level];
-  zlazy := LVLAZY[level];
+  e.level := level;
+  e.chain := LVCHAIN[level];
+  e.nice := LVNICE[level];
+  e.good := LVGOOD[level];
+  e.lazy := LVLAZY[level];
 end;
 
 // reverse the low n bits (canonical codes are MSB-first, DEFLATE writes LSB-first)
@@ -252,83 +296,100 @@ begin
   for var i := 0 to n-1 do begin result := (result shl 1) or (v and 1); v := v shr 1; end;
 end;
 
-// append one output byte, doubling the heap buffer as needed
-procedure ob1(b: longint);
+// make room for n more output bytes
+procedure ensure(var e: tzdefl; n: longint);
 begin
-  if op >= cap then begin if cap = 0 then cap := 256 else cap := cap * 2; ReAllocMem(buf, cap); end;
-  PByte(buf)[op] := b; inc(op);
+  if e.op + n <= e.cap then exit;
+  if e.cap = 0 then e.cap := 4096;
+  while e.cap < e.op + n do e.cap := e.cap * 2;
+  ReAllocMem(e.buf, e.cap);
+end;
+
+// append one output byte
+procedure ob1(var e: tzdefl; b: longint);
+begin
+  ensure(e, 1);
+  pbyte(e.buf)[e.op] := b; inc(e.op);
 end;
 
 // append n raw bytes; only valid when the bit buffer sits on a byte boundary
-procedure obn(p: pointer; n: longint);
+procedure obn(var e: tzdefl; p: pointer; n: longint);
 begin
-  if op + n > cap then begin
-    if cap = 0 then cap := 256;
-    while cap < op + n do cap := cap * 2;
-    ReAllocMem(buf, cap);
+  ensure(e, n);
+  if n > 0 then Move(p^, (pbyte(e.buf) + e.op)^, n);
+  inc(e.op, n);
+end;
+
+// write n bits, LSB-first. the accumulator empties four bytes at a time, so a
+// token's four writes cost one store instead of six
+procedure put(var e: tzdefl; v, n: longint); inline;
+begin
+  e.bb := e.bb or (qword(dword(v)) shl e.bc);
+  inc(e.bc, n);
+  if e.bc >= 32 then begin
+    if e.op + 4 > e.cap then ensure(e, 4);
+    PDword(pbyte(e.buf) + e.op)^ := dword(e.bb);
+    inc(e.op, 4);
+    e.bb := e.bb shr 32; dec(e.bc, 32);
   end;
-  if n > 0 then Move(p^, (PByte(buf) + op)^, n);
-  inc(op, n);
 end;
 
-// write n bits, LSB-first
-procedure put(v, n: longint);
+procedure flush(var e: tzdefl);
 begin
-  bb := bb or (v shl bc); inc(bc, n);
-  while bc >= 8 do begin ob1(bb and $FF); bb := bb shr 8; dec(bc, 8); end;
-end;
-
-procedure flush;
-begin
-  if bc > 0 then begin ob1(bb and $FF); bb := 0; bc := 0; end;
+  ensure(e, 8);
+  while e.bc > 0 do begin
+    pbyte(e.buf)[e.op] := byte(e.bb); inc(e.op);
+    e.bb := e.bb shr 8; dec(e.bc, 8);
+  end;
+  e.bb := 0; e.bc := 0;
 end;
 
 // length-limited Huffman code lengths for f[0..n-1] (>= 2 leaves forced so the
 // code is always complete); o[] receives the bit lengths. Two-queue Huffman with
 // zlib-style overflow redistribution capped at mx.
-procedure mkhuff(f: PLongint; n, mx: longint; o: PByte);
+procedure mkhuff(var e: tzdefl; f: PLongint; n, mx: longint; o: PByte);
 begin
   for var i := 0 to n-1 do o[i] := 0;
   var L := 0;
-  for var i := 0 to n-1 do if f[i] > 0 then begin hsym[L] := i; hfrq[L] := f[i]; inc(L); end;
+  for var i := 0 to n-1 do if f[i] > 0 then begin e.hsym[L] := i; e.hfrq[L] := f[i]; inc(L); end;
   var t := 0;
-  while L < 2 do begin if f[t] = 0 then begin hsym[L] := t; hfrq[L] := 1; inc(L); end; inc(t); end;
+  while L < 2 do begin if f[t] = 0 then begin e.hsym[L] := t; e.hfrq[L] := 1; inc(L); end; inc(t); end;
   // insertion sort leaves ascending by frequency
   for var a := 1 to L-1 do begin
-    var ff := hfrq[a]; var ss := hsym[a]; var b := a-1;
-    while (b >= 0) and (hfrq[b] > ff) do begin hfrq[b+1] := hfrq[b]; hsym[b+1] := hsym[b]; dec(b); end;
-    hfrq[b+1] := ff; hsym[b+1] := ss;
+    var ff := e.hfrq[a]; var ss := e.hsym[a]; var b := a-1;
+    while (b >= 0) and (e.hfrq[b] > ff) do begin e.hfrq[b+1] := e.hfrq[b]; e.hsym[b+1] := e.hsym[b]; dec(b); end;
+    e.hfrq[b+1] := ff; e.hsym[b+1] := ss;
   end;
   // two-queue Huffman: leaf queue [lo..L) merged with internal queue [iq..ni)
   var lo := 0; var iq := L; var ni := L;
   for var c := 1 to L-1 do begin
     var a, b: longint;
-    if (lo < L) and ((iq >= ni) or (hfrq[lo] <= hfrq[iq])) then begin a := lo; inc(lo); end else begin a := iq; inc(iq); end;
-    if (lo < L) and ((iq >= ni) or (hfrq[lo] <= hfrq[iq])) then begin b := lo; inc(lo); end else begin b := iq; inc(iq); end;
-    hfrq[ni] := hfrq[a] + hfrq[b]; hdad[a] := ni; hdad[b] := ni; inc(ni);
+    if (lo < L) and ((iq >= ni) or (e.hfrq[lo] <= e.hfrq[iq])) then begin a := lo; inc(lo); end else begin a := iq; inc(iq); end;
+    if (lo < L) and ((iq >= ni) or (e.hfrq[lo] <= e.hfrq[iq])) then begin b := lo; inc(lo); end else begin b := iq; inc(iq); end;
+    e.hfrq[ni] := e.hfrq[a] + e.hfrq[b]; e.hdad[a] := ni; e.hdad[b] := ni; inc(ni);
   end;
   // bit length = node depth; a parent always has a higher index than its children
-  hdep[ni-1] := 0;
-  for var i := ni-2 downto 0 do hdep[i] := hdep[hdad[i]] + 1;
+  e.hdep[ni-1] := 0;
+  for var i := ni-2 downto 0 do e.hdep[i] := e.hdep[e.hdad[i]] + 1;
   var mxb := 0;
-  for var i := 0 to L-1 do if hdep[i] > mxb then mxb := hdep[i];
+  for var i := 0 to L-1 do if e.hdep[i] > mxb then mxb := e.hdep[i];
   if mxb > mx then begin
-    for var b := 0 to mx do hbl[b] := 0;
+    for var b := 0 to mx do e.hbl[b] := 0;
     var ov := 0;
     for var i := 0 to ni-1 do begin
-      if hdep[i] > mx then begin hdep[i] := mx; inc(ov); end;
-      if i < L then inc(hbl[hdep[i]]);
+      if e.hdep[i] > mx then begin e.hdep[i] := mx; inc(ov); end;
+      if i < L then inc(e.hbl[e.hdep[i]]);
     end;
     repeat
       var q := mx-1;
-      while hbl[q] = 0 do dec(q);
-      dec(hbl[q]); inc(hbl[q+1], 2); dec(hbl[mx]); dec(ov, 2);
+      while e.hbl[q] = 0 do dec(q);
+      dec(e.hbl[q]); inc(e.hbl[q+1], 2); dec(e.hbl[mx]); dec(ov, 2);
     until ov <= 0;
     // least-frequent leaves (front) take the longest codes
     var k := 0;
-    for var b := mx downto 1 do while hbl[b] > 0 do begin hdep[k] := b; inc(k); dec(hbl[b]); end;
+    for var b := mx downto 1 do while e.hbl[b] > 0 do begin e.hdep[k] := b; inc(k); dec(e.hbl[b]); end;
   end;
-  for var i := 0 to L-1 do o[hsym[i]] := hdep[i];
+  for var i := 0 to L-1 do o[e.hsym[i]] := e.hdep[i];
 end;
 
 // assign canonical codes from bit lengths ln[0..n-1] into co[] (LSB-first)
@@ -357,46 +418,49 @@ begin
 end;
 
 // record one literal
-procedure tlit(b: longint); inline;
+procedure tlit(var e: tzdefl; b: longint); inline;
 begin
-  inc(fl[b]);
-  toks[tokn] := b; inc(tokn);
+  inc(e.fl[b]);
+  e.toks[e.tokn] := b; inc(e.tokn);
 end;
 
 // record one (length, distance) match
-procedure tmatch(ln, dist: longint); inline;
+procedure tmatch(var e: tzdefl; ln, dist: longint); inline;
 begin
-  inc(fl[257 + LENSYM[ln]]); inc(fd[dsym(dist)]);
-  toks[tokn] := TOKMATCH or (dword(ln) shl 16) or dword(dist); inc(tokn);
+  inc(e.fl[257 + LENSYM[ln]]); inc(e.fd[dsym(dist)]);
+  e.toks[e.tokn] := TOKMATCH or (dword(ln) shl 16) or dword(dist); inc(e.tokn);
 end;
 
 // replay the recorded tokens through the active Huffman codes
-procedure emitTokens;
+procedure emitTokens(var e: tzdefl);
 begin
-  for var i := 0 to tokn-1 do begin
-    var t := toks[i];
-    if t < TOKMATCH then put(lcode[t], llen[t])
+  var tk := e.toks;
+  var lc: pword := @e.lcode[0]; var ll: pbyte := @e.llen[0];
+  var dc: pword := @e.dcode[0]; var dl: pbyte := @e.dlen[0];
+  for var i := 0 to e.tokn-1 do begin
+    var t := tk[i];
+    if t < TOKMATCH then put(e, lc[t], ll[t])
     else begin
       var ln := longint((t shr 16) and $1ff);
       var dist := longint(t and $ffff);
       var li := LENSYM[ln]; var di := dsym(dist);
-      put(lcode[257+li], llen[257+li]);
-      if LE[li] > 0 then put(ln - LB[li], LE[li]);
-      put(dcode[di], dlen[di]);
-      if DE[di] > 0 then put(dist - DB[di], DE[di]);
+      put(e, lc[257+li], ll[257+li]);
+      if LE[li] > 0 then put(e, ln - LB[li], LE[li]);
+      put(e, dc[di], dl[di]);
+      if DE[di] > 0 then put(e, dist - DB[di], DE[di]);
     end;
   end;
 end;
 
 // insert positions lo..hi-1 into the hash chains, skipping any that lack the 3
 // bytes of lookahead the hash needs. runs once per byte a match covers, so the
-// per-thread state is hoisted out of the loop
-procedure insRange(lo, hi: longint);
+// state is hoisted out of the loop
+procedure insRange(var e: tzdefl; lo, hi: longint);
 begin
-  var s: pbyte := sp;
-  var ph: plongint := @head[0];
-  var pp: plongint := @prev[0];
-  var top := slen - 3;                             // last position with lookahead
+  var s: pbyte := e.sp;
+  var ph: plongint := @e.head[0];
+  var pp: plongint := @e.prev[0];
+  var top := e.slen - 3;                           // last position with lookahead
   if hi > top + 1 then hi := top + 1;
   var q := lo;
   while q < hi do begin
@@ -409,25 +473,25 @@ end;
 // longest match for position p (needs 3 bytes lookahead); inserts p into the hash
 // chains, returns the length (>= 3) or 2 if none, and sets mst to the match start.
 // prevlen is the match already in hand at p-1, 0 when there is none
-function fm(p, prevlen: longint): longint;
+function fm(var e: tzdefl; p, prevlen: longint): longint;
 begin
-  // the per-thread state is hoisted into locals up front: the chain walk below
-  // runs up to zchain times per call and must not pay a TLS lookup per iteration
-  var s: pbyte := sp;
-  var ph: plongint := @head[0];
-  var pp: plongint := @prev[0];
-  var chain := zchain;
-  var nice := znice;
+  // the chain walk below runs up to chain times per call, so everything it
+  // touches is hoisted into locals up front
+  var s: pbyte := e.sp;
+  var ph: plongint := @e.head[0];
+  var pp: plongint := @e.prev[0];
+  var chain := e.chain;
+  var nice := e.nice;
   // already sitting on a decent match: spend a quarter of the effort looking for
   // a better one (zlib's good_length)
-  if prevlen >= zgood then chain := chain shr 2;
+  if prevlen >= e.good then chain := chain shr 2;
 
   var h := ((s[p] shl 10) xor (s[p+1] shl 5) xor s[p+2]) and HM;
   var cand := ph[h];
   pp[p and WM] := cand; ph[h] := p;
   var best := 2;
   var bestst := 0;
-  var mx := slen - p; if mx > 258 then mx := 258;
+  var mx := e.slen - p; if mx > 258 then mx := 258;
   var cw := 0;
   while (cand >= 0) and (cw < chain) do begin
     if p - cand >= WS then break;                  // distance bounded by the window
@@ -447,214 +511,218 @@ begin
     end;
     cand := pp[cand and WM]; inc(cw);
   end;
-  if best > 2 then mst := bestst;                  // only meaningful for a real match
+  if best > 2 then e.mst := bestst;                // only meaningful for a real match
   result := best;
 end;
 
 // LZ77 over the whole input, recording tokens and their frequencies in one pass.
 // Above level 3 a match at i is held back one byte to see if i+1 starts a longer
 // one (zlib's lazy heuristic), below it every match is taken as found.
-procedure lz;
+procedure lz(var e: tzdefl);
 begin
-  FillChar(head, sizeof(head), $FF);
-  tokn := 0;
-  var s: pbyte := sp;                                      // stable for the whole pass
-  var n := slen;
-  var lazy := zlazy;
+  FillChar(e.head, sizeof(e.head), $FF);
+  e.tokn := 0;
+  var s: pbyte := e.sp;                                    // stable for the whole pass
+  var n := e.slen;
+  var lazy := e.lazy;
   var i := 0; var pl := 2; var ps := 0; var avail := 0;    // pl/ps: match deferred from i-1
   var nx := 0;
   while i < n do begin
-    if (zprogress <> nil) and (i >= nx) then begin
+    if (i >= nx) and e.usecb then begin
       inc(nx, 65_536);
-      if not zprogress(progbase + i, progtotal, op) then begin abort := true; exit; end;
+      if not zprogress(e.progbase + i, e.progtotal, e.op) then begin e.aborted := true; exit; end;
     end;
     var ml := 2;
     // pl is the match deferred from i-1 in lazy mode, 2 (i.e. none) otherwise
-    if i + 3 <= n then ml := fm(i, pl);                    // best match at i (inserts i)
+    if i + 3 <= n then ml := fm(e, i, pl);                 // best match at i (inserts i)
     if not lazy then begin
       // greedy: emit the match at i straight away
       if ml >= 3 then begin
-        tmatch(ml, i - mst);
-        var e := i + ml; inc(i);
-        insRange(i, e);
-        i := e;
-      end else begin tlit(s[i]); inc(i); end;
+        tmatch(e, ml, i - e.mst);
+        var en := i + ml; inc(i);
+        insRange(e, i, en);
+        i := en;
+      end else begin tlit(e, s[i]); inc(i); end;
       continue;
     end;
     if (pl >= 3) and (ml <= pl) then begin
       // i-1's match is not beaten: emit it and skip the bytes it covers
-      tmatch(pl, (i-1) - ps);
-      var e := (i-1) + pl; inc(i);
-      insRange(i, e);
-      i := e; pl := 2; avail := 0;
+      tmatch(e, pl, (i-1) - ps);
+      var en := (i-1) + pl; inc(i);
+      insRange(e, i, en);
+      i := en; pl := 2; avail := 0;
     end else begin
       // defer i; the byte at i-1 (if any) could not do better, so emit it literally
-      if avail = 1 then tlit(s[i-1]);
-      pl := ml; ps := mst; avail := 1; inc(i);
+      if avail = 1 then tlit(e, s[i-1]);
+      pl := ml; ps := e.mst; avail := 1; inc(i);
     end;
   end;
-  if avail = 1 then tlit(s[i-1]);                          // trailing literal
+  if avail = 1 then tlit(e, s[i-1]);                       // trailing literal
 end;
 
 // append one entry to the RLE'd code-length stream
-procedure addrle(s, e, x: longint);
-begin clsym[rlen] := s; clext[rlen] := e; clxb[rlen] := x; inc(cf[s]); inc(rlen); end;
+procedure addrle(var e: tzdefl; s, x, xb: longint);
+begin e.clsym[e.rlen] := s; e.clext[e.rlen] := x; e.clxb[e.rlen] := xb; inc(e.cf[s]); inc(e.rlen); end;
 
 // RLE-encode the lit+dist code lengths into the code-length alphabet (RFC 1951 3.2.7)
-procedure hdrRLE;
+procedure hdrRLE(var e: tzdefl);
 begin
-  for var i := 0 to lcount-1 do comb[i] := llen[i];
-  for var i := 0 to dcount-1 do comb[lcount+i] := dlen[i];
-  var tot := lcount + dcount;
-  FillChar(cf, sizeof(cf), 0); rlen := 0;
+  for var i := 0 to e.lcount-1 do e.comb[i] := e.llen[i];
+  for var i := 0 to e.dcount-1 do e.comb[e.lcount+i] := e.dlen[i];
+  var tot := e.lcount + e.dcount;
+  FillChar(e.cf, sizeof(e.cf), 0); e.rlen := 0;
   var i := 0;
   while i < tot do begin
-    var cur := comb[i]; var j := i+1;
-    while (j < tot) and (comb[j] = cur) do inc(j);
+    var cur := e.comb[i]; var j := i+1;
+    while (j < tot) and (e.comb[j] = cur) do inc(j);
     var run := j - i;
     if cur = 0 then begin
-      while run >= 11 do begin var take := run; if take > 138 then take := 138; addrle(18, take-11, 7); dec(run, take); end;
-      while run >= 3 do begin var take := run; if take > 10 then take := 10; addrle(17, take-3, 3); dec(run, take); end;
-      while run > 0 do begin addrle(0, 0, 0); dec(run); end;
+      while run >= 11 do begin var take := run; if take > 138 then take := 138; addrle(e, 18, take-11, 7); dec(run, take); end;
+      while run >= 3 do begin var take := run; if take > 10 then take := 10; addrle(e, 17, take-3, 3); dec(run, take); end;
+      while run > 0 do begin addrle(e, 0, 0, 0); dec(run); end;
     end else begin
-      addrle(cur, 0, 0); dec(run);
-      while run >= 3 do begin var take := run; if take > 6 then take := 6; addrle(16, take-3, 2); dec(run, take); end;
-      while run > 0 do begin addrle(cur, 0, 0); dec(run); end;
+      addrle(e, cur, 0, 0); dec(run);
+      while run >= 3 do begin var take := run; if take > 6 then take := 6; addrle(e, 16, take-3, 2); dec(run, take); end;
+      while run > 0 do begin addrle(e, cur, 0, 0); dec(run); end;
     end;
     i := j;
   end;
 end;
 
 // total bit cost of the LZ tokens (+ end-of-block) under the given code lengths
-function tokbits(ll, dl: PByte): int64;
+function tokbits(var e: tzdefl; ll, dl: PByte): int64;
 begin
   result := 0;
-  for var i := 0 to 285 do result := result + int64(fl[i]) * ll[i];
-  for var i := 0 to 29 do result := result + int64(fd[i]) * dl[i];
-  for var i := 0 to 28 do result := result + int64(fl[257+i]) * LE[i];   // length extra
-  for var i := 0 to 29 do result := result + int64(fd[i]) * DE[i];       // distance extra
+  for var i := 0 to 285 do result := result + int64(e.fl[i]) * ll[i];
+  for var i := 0 to 29 do result := result + int64(e.fd[i]) * dl[i];
+  for var i := 0 to 28 do result := result + int64(e.fl[257+i]) * LE[i];   // length extra
+  for var i := 0 to 29 do result := result + int64(e.fd[i]) * DE[i];       // distance extra
 end;
 
 // emit the whole input as byte-aligned stored blocks (<= 65535 each)
-procedure emitStored(final: boolean);
+procedure emitStored(var e: tzdefl; final: boolean);
 begin
   var p := 0;
-  while p < slen do begin
-    if (zprogress <> nil) and (not zprogress(progbase + p, progtotal, op)) then begin abort := true; exit; end;
-    var n := slen - p; if n > 65_535 then n := 65_535;
-    if p + n >= slen then put(ord(final), 1) else put(0, 1);  // BFINAL on the last block
-    put(0, 2); flush;                                // BTYPE = 00, align to byte
-    ob1(n and $FF); ob1((n shr 8) and $FF);
-    ob1((not n) and $FF); ob1(((not n) shr 8) and $FF);
-    obn(sp + p, n);                                  // the block is byte-aligned, copy it in one go
+  while p < e.slen do begin
+    if e.usecb and (not zprogress(e.progbase + p, e.progtotal, e.op)) then begin e.aborted := true; exit; end;
+    var n := e.slen - p; if n > 65_535 then n := 65_535;
+    if p + n >= e.slen then put(e, ord(final), 1) else put(e, 0, 1);  // BFINAL on the last block
+    put(e, 0, 2); flush(e);                          // BTYPE = 00, align to byte
+    ob1(e, n and $FF); ob1(e, (n shr 8) and $FF);
+    ob1(e, (not n) and $FF); ob1(e, ((not n) shr 8) and $FF);
+    obn(e, e.sp + p, n);                             // the block is byte-aligned, copy it in one go
     inc(p, n);
   end;
 end;
 
 // compress sp/slen as one DEFLATE block (smallest of stored/fixed/dynamic)
-procedure compressBlock(final: boolean);
+procedure compressBlock(var e: tzdefl; final: boolean);
 begin
-  if zlevel = 0 then begin emitStored(final); exit; end;   // level 0: no compression at all
+  if e.level = 0 then begin emitStored(e, final); exit; end;   // level 0: no compression at all
 
-  FillChar(FIXL[0], 144, 8); FillChar(FIXL[144], 112, 9); FillChar(FIXL[256], 24, 7); FillChar(FIXL[280], 8, 8);
-  FillChar(FIXD[0], 30, 5);
+  FillChar(e.FIXL[0], 144, 8); FillChar(e.FIXL[144], 112, 9); FillChar(e.FIXL[256], 24, 7); FillChar(e.FIXL[280], 8, 8);
+  FillChar(e.FIXD[0], 30, 5);
 
   // one LZ pass: records the tokens and their frequencies. the emit pass below
   // replays the tokens, so the match finder runs once per block, not twice
-  FillChar(fl, sizeof(fl), 0); FillChar(fd, sizeof(fd), 0);
-  toks := GetMem((slen + 1) * sizeof(dword));   // at most one token per input byte
-  try
-    lz;
-    inc(fl[256]);
-    if abort then exit;
+  FillChar(e.fl, sizeof(e.fl), 0); FillChar(e.fd, sizeof(e.fd), 0);
+  if e.tokcap < e.slen + 1 then begin              // at most one token per input byte
+    e.tokcap := e.slen + 1;
+    ReAllocMem(e.toks, e.tokcap * sizeof(dword));
+  end;
+  lz(e);
+  inc(e.fl[256]);
+  if e.aborted then exit;
 
-    // dynamic lit/len + distance Huffman from the frequencies
-    mkhuff(@fl[0], 286, 15, @llen[0]);
-    mkhuff(@fd[0], 30, 15, @dlen[0]);
-    lcount := 286; while (lcount > 257) and (llen[lcount-1] = 0) do dec(lcount);
-    dcount := 30;  while (dcount > 1) and (dlen[dcount-1] = 0) do dec(dcount);
+  // dynamic lit/len + distance Huffman from the frequencies
+  mkhuff(e, @e.fl[0], 286, 15, @e.llen[0]);
+  mkhuff(e, @e.fd[0], 30, 15, @e.dlen[0]);
+  e.lcount := 286; while (e.lcount > 257) and (e.llen[e.lcount-1] = 0) do dec(e.lcount);
+  e.dcount := 30;  while (e.dcount > 1) and (e.dlen[e.dcount-1] = 0) do dec(e.dcount);
 
-    // code-length alphabet for the dynamic header
-    hdrRLE;
-    mkhuff(@cf[0], 19, 7, @cllen[0]);
-    numCL := 19; while (numCL > 4) and (cllen[CO[numCL-1]] = 0) do dec(numCL);
+  // code-length alphabet for the dynamic header
+  hdrRLE(e);
+  mkhuff(e, @e.cf[0], 19, 7, @e.cllen[0]);
+  e.numCL := 19; while (e.numCL > 4) and (e.cllen[CO[e.numCL-1]] = 0) do dec(e.numCL);
 
-    // canonical codes for all three alphabets
-    mkcodes(@llen[0], 286, @lcode[0]);
-    mkcodes(@dlen[0], 30, @dcode[0]);
-    mkcodes(@cllen[0], 19, @clcode[0]);
+  // canonical codes for all three alphabets
+  mkcodes(@e.llen[0], 286, @e.lcode[0]);
+  mkcodes(@e.dlen[0], 30, @e.dcode[0]);
+  mkcodes(@e.cllen[0], 19, @e.clcode[0]);
 
-    // candidate sizes: dynamic vs fixed (one block) vs stored (chunked, byte-aligned)
-    var hbits: int64 := 5 + 5 + 4 + 3 * numCL;
-    for var i := 0 to rlen-1 do hbits := hbits + cllen[clsym[i]] + clxb[i];
-    var dynBits := 3 + hbits + tokbits(@llen[0], @dlen[0]);
-    var fixBits := 3 + tokbits(@FIXL[0], @FIXD[0]);
-    var nb := (slen + 65_534) div 65_535;
-    var storedBytes: int64 := int64(nb) * 5 + slen;
+  // candidate sizes: dynamic vs fixed (one block) vs stored (chunked, byte-aligned)
+  var hbits: int64 := 5 + 5 + 4 + 3 * e.numCL;
+  for var i := 0 to e.rlen-1 do hbits := hbits + e.cllen[e.clsym[i]] + e.clxb[i];
+  var dynBits := 3 + hbits + tokbits(e, @e.llen[0], @e.dlen[0]);
+  var fixBits := 3 + tokbits(e, @e.FIXL[0], @e.FIXD[0]);
+  var nb := (e.slen + 65_534) div 65_535;
+  var storedBytes: int64 := int64(nb) * 5 + e.slen;
 
-    var nonStored := dynBits; var dyn := true;
-    if fixBits < dynBits then begin nonStored := fixBits; dyn := false; end;
+  var nonStored := dynBits; var dyn := true;
+  if fixBits < dynBits then begin nonStored := fixBits; dyn := false; end;
 
-    if storedBytes < (nonStored + 7) div 8 then
-      emitStored(final)
-    else begin
-      put(ord(final), 1);                            // BFINAL
-      if dyn then begin
-        put(2, 2);                                   // BTYPE = 10 (dynamic)
-        put(lcount - 257, 5); put(dcount - 1, 5); put(numCL - 4, 4);
-        for var i := 0 to numCL-1 do put(cllen[CO[i]], 3);
-        for var i := 0 to rlen-1 do begin
-          put(clcode[clsym[i]], cllen[clsym[i]]);
-          if clxb[i] > 0 then put(clext[i], clxb[i]);
-        end;
-      end else begin
-        put(1, 2);                                   // BTYPE = 01 (fixed)
-        Move(FIXL[0], llen[0], 288); Move(FIXD[0], dlen[0], 30);
-        mkcodes(@llen[0], 288, @lcode[0]); mkcodes(@dlen[0], 30, @dcode[0]);
+  if storedBytes < (nonStored + 7) div 8 then
+    emitStored(e, final)
+  else begin
+    // the block's exact bit cost is known, so reserve it once and let the emit
+    // loop write without a capacity check per token
+    ensure(e, longint((nonStored + 7) div 8) + 16);
+    put(e, ord(final), 1);                           // BFINAL
+    if dyn then begin
+      put(e, 2, 2);                                  // BTYPE = 10 (dynamic)
+      put(e, e.lcount - 257, 5); put(e, e.dcount - 1, 5); put(e, e.numCL - 4, 4);
+      for var i := 0 to e.numCL-1 do put(e, e.cllen[CO[i]], 3);
+      for var i := 0 to e.rlen-1 do begin
+        put(e, e.clcode[e.clsym[i]], e.cllen[e.clsym[i]]);
+        if e.clxb[i] > 0 then put(e, e.clext[i], e.clxb[i]);
       end;
-      emitTokens;                                    // replay pass 1's tokens
-      put(lcode[256], llen[256]);                    // end of block
+    end else begin
+      put(e, 1, 2);                                  // BTYPE = 01 (fixed)
+      Move(e.FIXL[0], e.llen[0], 288); Move(e.FIXD[0], e.dlen[0], 30);
+      mkcodes(@e.llen[0], 288, @e.lcode[0]); mkcodes(@e.dlen[0], 30, @e.dcode[0]);
     end;
-  finally
-    FreeMem(toks); toks := nil;
+    emitTokens(e);                                   // replay pass 1's tokens
+    put(e, e.lcode[256], e.llen[256]);               // end of block
   end;
 end;
 
 // container header (fmt: ZFLATE_RAW / ZFLATE_ZLIB / ZFLATE_GZIP); the level is
 // advertised in the header, as zlib FLEVEL and gzip XFL
-procedure packHeader(fmt: longint; level: dword);
+procedure packHeader(var e: tzdefl; fmt: longint; level: dword);
 begin
   if fmt = ZFLATE_ZLIB then begin
-    ob1($78);                                    // CM=8 (deflate), CINFO=7 (32k window)
+    ob1(e, $78);                                 // CM=8 (deflate), CINFO=7 (32k window)
     // FLG carries FLEVEL and an FCHECK that makes the 2 bytes a multiple of 31
-    ob1(match level of
+    var flg := match level of
       0, 1: $01;
       2..5: $5e;
       6:    $9c;
       _:    $da;
-    end);
+    end;
+    ob1(e, flg);
   end else if fmt = ZFLATE_GZIP then begin
-    ob1($1f); ob1($8b); ob1(8);                  // magic, deflate
-    for var i := 0 to 4 do ob1(0);               // no flags, mtime 0
-    ob1(match level of                           // XFL
-      9: 2;                                      // best compression
-      0, 1: 4;                                   // fastest
+    ob1(e, $1f); ob1(e, $8b); ob1(e, 8);          // magic, deflate
+    for var i := 0 to 4 do ob1(e, 0);             // no flags, mtime 0
+    var xfl := match level of
+      9: 2;                                       // best compression
+      0, 1: 4;                                    // fastest
       _: 0;
-    end);
-    ob1($ff);                                    // OS unknown
+    end;
+    ob1(e, xfl);
+    ob1(e, $ff);                                  // OS unknown
   end;
 end;
 
 // container footer from checksums of the source data
-procedure packFooter(fmt: longint; crc, adler, isize: dword);
+procedure packFooter(var e: tzdefl; fmt: longint; crc, adler, isize: dword);
 begin
   if fmt = ZFLATE_ZLIB then begin
     // adler32, big-endian
-    ob1(adler shr 24); ob1((adler shr 16) and $ff); ob1((adler shr 8) and $ff); ob1(adler and $ff);
+    ob1(e, adler shr 24); ob1(e, (adler shr 16) and $ff); ob1(e, (adler shr 8) and $ff); ob1(e, adler and $ff);
   end else if fmt = ZFLATE_GZIP then begin
     // crc32 then size, little-endian
-    ob1(crc and $ff); ob1((crc shr 8) and $ff); ob1((crc shr 16) and $ff); ob1(crc shr 24);
-    ob1(isize and $ff); ob1((isize shr 8) and $ff); ob1((isize shr 16) and $ff); ob1(isize shr 24);
+    ob1(e, crc and $ff); ob1(e, (crc shr 8) and $ff); ob1(e, (crc shr 16) and $ff); ob1(e, crc shr 24);
+    ob1(e, isize and $ff); ob1(e, (isize shr 8) and $ff); ob1(e, (isize shr 16) and $ff); ob1(e, isize shr 24);
   end;
 end;
 
@@ -663,16 +731,19 @@ end;
 // boundary, so fragments from different threads concatenate into a valid stream
 procedure compressFragment(src: pbyte; len: dword; level: dword; out frag: TBytes);
 begin
-  setLevel(level);                               // runs on the worker thread, sets its own state
-  buf := nil; cap := 0; op := 0; bb := 0; bc := 0;
-  sp := src; slen := len;
-  compressBlock(false);
-  put(0, 1); put(0, 2); flush;                   // empty non-final stored block: BFINAL=0 BTYPE=00, align
-  ob1(0); ob1(0); ob1($ff); ob1($ff);            // LEN=0, NLEN=FFFF
-  frag := nil;
-  setlength(frag, op);
-  if op > 0 then Move(buf^, frag[0], op);
-  FreeMem(buf); buf := nil; cap := 0;
+  var e := znew;                                 // the worker's own state
+  try
+    setLevel(e^, level);
+    e^.sp := src; e^.slen := len;
+    compressBlock(e^, false);
+    put(e^, 0, 1); put(e^, 0, 2); flush(e^);      // empty non-final stored block: BFINAL=0 BTYPE=00, align
+    ob1(e^, 0); ob1(e^, 0); ob1(e^, $ff); ob1(e^, $ff);   // LEN=0, NLEN=FFFF
+    frag := nil;
+    setlength(frag, e^.op);
+    if e^.op > 0 then Move(e^.buf^, frag[0], e^.op);
+  finally
+    zfree(e);
+  end;
 end;
 
 // compress data across nt workers and append the fragments to the output, in
@@ -680,121 +751,117 @@ end;
 // straight out of it with no copying; a batch at a time keeps the progress
 // callback and its abort responsive. leaves the stream open: the caller emits
 // the final block. must be called on a byte boundary
-procedure packParallel(data: pointer; len: dword; level: dword; nt: longint);
+procedure packParallel(var e: tzdefl; data: pointer; len: dword; level: dword; nt: longint);
 begin
   var frags: array of TBytes := nil;
   setlength(frags, nt);
-  var cb := zprogress; zprogress := nil;         // this thread is a worker too, keep the per-block sites quiet
+  var cb := zprogress;
   var at: qword := 0;
   while at < len do begin
     var cnt := 0;
     while (cnt < nt) and (at + qword(cnt) * ZSCHUNK < len) do inc(cnt);
-    // this thread is one of the workers, and compressFragment takes the encoder
-    // output buffer over for its own fragment; park what we have accumulated so
-    // far (the container header, and every fragment before this batch)
-    var sbuf := buf; var scap := cap; var sop := op; var sbb := bb; var sbc := bc;
     for parallel(nt) var s := 0 to cnt-1 do begin
       var off := at + qword(s) * ZSCHUNK;
       var n := len - off;
       if n > ZSCHUNK then n := ZSCHUNK;
       compressFragment(pbyte(data) + off, n, level, frags[s]);
     end;
-    buf := sbuf; cap := scap; op := sop; bb := sbb; bc := sbc;
     for var s := 0 to cnt-1 do begin
-      obn(pointer(frags[s]), length(frags[s]));
+      obn(e, pointer(frags[s]), length(frags[s]));
       frags[s] := nil;
     end;
     at := at + qword(cnt) * ZSCHUNK;
     if at > len then at := len;
-    if (cb <> nil) and (not cb(at, len, op)) then begin abort := true; break; end;
+    if (cb <> nil) and (not cb(at, len, e.op)) then begin e.aborted := true; break; end;
   end;
-  zprogress := cb;
-  if not abort then begin put(1, 1); put(1, 2); put(0, 7); end;   // final empty block: the fragments are all non-final
+  if not e.aborted then begin put(e, 1, 1); put(e, 1, 2); put(e, 0, 7); end;   // final empty block: the fragments are all non-final
 end;
 
 // fmt: ZFLATE_RAW / ZFLATE_ZLIB / ZFLATE_GZIP. header + deflate stream + checksum footer
 function pack(fmt: longint; data: pointer; len: dword; out outbuf: pointer; out outlen: dword; level: dword): integer;
 begin
-  outbuf := nil; outlen := 0; abort := false;
+  outbuf := nil; outlen := 0;
   if ((data = nil) and (len <> 0)) or (len > $7FFFFFFF) then exit(ZFLATE_EDEFLATE);
-  setLevel(level);
   var nt := zuse_threads;
   if nt < 1 then nt := 1;
   if nt > 64 then nt := 64;
-  buf := nil; cap := 0; op := 0; bb := 0; bc := 0;
-  progbase := 0; progtotal := len;
+  var e := znew;
+  setLevel(e^, level);
+  e^.progtotal := len;
+  e^.usecb := zprogress <> nil;
   result := ZFLATE_EDEFLATE;
   try
-    packHeader(fmt, level);
-    if len = 0 then begin put(1, 1); put(1, 2); put(0, 7); end                // empty: final fixed, just EOB
-    else if nt > 1 then
-      packParallel(data, len, level, nt)
-    else
+    packHeader(e^, fmt, level);
+    if len = 0 then begin put(e^, 1, 1); put(e^, 1, 2); put(e^, 0, 7); end     // empty: final fixed, just EOB
+    else if nt > 1 then begin
+      e^.usecb := false;                                                       // packParallel drives the callback itself
+      packParallel(e^, data, len, level, nt);
+    end else
       // one block per chunk, so the token buffer stays bounded on huge inputs
       for var at: dword := 0 to (len - 1) div ZSCHUNK do begin
-        progbase := qword(at) * ZSCHUNK;
-        sp := pbyte(data) + progbase;
-        slen := len - progbase;
-        if slen > ZSCHUNK then slen := ZSCHUNK;
-        compressBlock(progbase + dword(slen) >= len);
-        if abort then break;
+        e^.progbase := qword(at) * ZSCHUNK;
+        e^.sp := pbyte(data) + e^.progbase;
+        e^.slen := len - e^.progbase;
+        if e^.slen > ZSCHUNK then e^.slen := ZSCHUNK;
+        compressBlock(e^, e^.progbase + dword(e^.slen) >= len);
+        if e^.aborted then break;
       end;
-    if abort then result := ZFLATE_EABORTED
+    if e^.aborted then result := ZFLATE_EABORTED
     else begin
-      flush;
+      flush(e^);
       var c: dword := 0; var a: dword := 1;
       if fmt = ZFLATE_ZLIB then a := adler32(1, data, len)
       else if fmt = ZFLATE_GZIP then c := crc32b(0, data, len);
-      packFooter(fmt, c, a, len);
-      if zprogress <> nil then zprogress(len, len, op);
-      outbuf := buf; outlen := op;
+      packFooter(e^, fmt, c, a, len);
+      if zprogress <> nil then zprogress(len, len, e^.op);
+      outbuf := e^.buf; outlen := e^.op;
+      e^.buf := nil;                              // handed to the caller
       result := ZFLATE_OK;
     end;
   except
     result := ZFLATE_EDEFLATE;
   end;
-  if (result <> ZFLATE_OK) and (buf <> nil) then begin FreeMem(buf); buf := nil; end;
+  zfree(e);
 end;
 
 // single-threaded streaming compressor: one chunk = one bit-contiguous block
 function zcompress_stream_seq(streamtype: dword; reader: tzreader; writer: tzwriter; totalsize: qword; level: dword): integer;
 begin
-  abort := false;
-  setLevel(level);
-  buf := nil; cap := 0; op := 0; bb := 0; bc := 0;
-  var cb := zprogress; zprogress := nil;         // the per-block sites see chunk-local numbers, keep them quiet
+  var e := znew;
+  setLevel(e^, level);
+  var cb := zprogress;                           // the per-block sites see chunk-local numbers, keep them quiet
   var bufA: pbyte := GetMem(ZSCHUNK);
   var bufB: pbyte := GetMem(ZSCHUNK);
   var crc: dword := 0; var adler: dword := 1;
   var total, wrote: qword := 0;
   result := ZFLATE_EDEFLATE;
   try
-    packHeader(streamtype, level);
+    packHeader(e^, streamtype, level);
     var cur := reader(bufA, ZSCHUNK);
-    if cur = 0 then begin put(1, 1); put(1, 2); put(0, 7); end   // empty input: final fixed, just EOB
+    if cur = 0 then begin put(e^, 1, 1); put(e^, 1, 2); put(e^, 0, 7); end   // empty input: final fixed, just EOB
     else
       repeat
         var nxt := reader(bufB, ZSCHUNK);                        // look ahead to spot the last chunk
         if streamtype = ZFLATE_ZLIB then adler := adler32(adler, bufA, cur)
         else if streamtype = ZFLATE_GZIP then crc := crc32b(crc, bufA, cur);
         total := total + cur;
-        sp := bufA; slen := cur;
-        compressBlock(nxt = 0);                                  // back-references never cross chunks
-        if op > 0 then begin
-          wrote := wrote + op;
-          if not writer(buf, op) then begin abort := true; break; end;
-          op := 0;
+        e^.sp := bufA; e^.slen := cur;
+        compressBlock(e^, nxt = 0);                              // back-references never cross chunks
+        if e^.op > 0 then begin
+          wrote := wrote + e^.op;
+          if not writer(e^.buf, e^.op) then begin e^.aborted := true; break; end;
+          e^.op := 0;
         end;
-        if (cb <> nil) and (not cb(total, totalsize, wrote)) then begin abort := true; break; end;
+        if (cb <> nil) and (not cb(total, totalsize, wrote)) then begin e^.aborted := true; break; end;
         SwapValues(bufA, bufB);
         cur := nxt;
       until cur = 0;
-    if abort then result := ZFLATE_EABORTED
+    if e^.aborted then result := ZFLATE_EABORTED
     else begin
-      flush;
-      packFooter(streamtype, crc, adler, total and $ffffffff);
-      wrote := wrote + op;
-      if (op > 0) and (not writer(buf, op)) then result := ZFLATE_EABORTED
+      flush(e^);
+      packFooter(e^, streamtype, crc, adler, total and $ffffffff);
+      wrote := wrote + e^.op;
+      if (e^.op > 0) and (not writer(e^.buf, e^.op)) then result := ZFLATE_EABORTED
       else begin
         if cb <> nil then cb(total, totalsize, wrote);
         result := ZFLATE_OK;
@@ -803,35 +870,33 @@ begin
   except
     result := ZFLATE_EDEFLATE;
   end;
-  if buf <> nil then begin FreeMem(buf); buf := nil; end;
+  zfree(e);
   FreeMem(bufA); FreeMem(bufB);
-  zprogress := cb;
 end;
 
 // multi-threaded streaming compressor: reads batches of nt chunks, compresses
 // them across nt workers, writes the fragments back in order
 function zcompress_stream_par(streamtype: dword; reader: tzreader; writer: tzwriter; totalsize: qword; level: dword; nt: longint): integer;
 begin
-  abort := false;
-  setLevel(level);                               // for the header/footer written on this thread
-  var cb := zprogress; zprogress := nil;
+  var e := znew;
+  setLevel(e^, level);                           // for the header/footer written on this thread
+  var cb := zprogress;
   var inbuf: array of pbyte := nil; setlength(inbuf, nt);
   for var i := 0 to nt-1 do inbuf[i] := GetMem(ZSCHUNK);
   var inlen: array of dword := nil; setlength(inlen, nt);
   var frags: array of TBytes := nil; setlength(frags, nt);
   var crc: dword := 0; var adler: dword := 1;
   var total, wrote: qword := 0;
-  buf := nil; cap := 0; op := 0; bb := 0; bc := 0;
   result := ZFLATE_EDEFLATE;
   try
-    packHeader(streamtype, level);
-    if op > 0 then begin
-      wrote := wrote + op;
-      if not writer(buf, op) then abort := true;
-      op := 0;
+    packHeader(e^, streamtype, level);
+    if e^.op > 0 then begin
+      wrote := wrote + e^.op;
+      if not writer(e^.buf, e^.op) then e^.aborted := true;
+      e^.op := 0;
     end;
     var eof := false;
-    while (not eof) and (not abort) do begin
+    while (not eof) and (not e^.aborted) do begin
       // fill up to nt chunks for this batch
       var cnt := 0;
       while cnt < nt do begin
@@ -840,7 +905,7 @@ begin
         inlen[cnt] := got; inc(cnt);
       end;
       if cnt = 0 then break;
-      // compress the batch: each worker owns its threadvar encoder state
+      // compress the batch: each worker owns its encoder state
       for parallel(nt) var s := 0 to cnt-1 do
         compressFragment(inbuf[s], inlen[s], level, frags[s]);
       // write fragments in order, updating checksums and progress on this thread
@@ -849,19 +914,19 @@ begin
         else if streamtype = ZFLATE_GZIP then crc := crc32b(crc, inbuf[s], inlen[s]);
         total := total + inlen[s];
         wrote := wrote + length(frags[s]);
-        if (length(frags[s]) > 0) and (not writer(pointer(frags[s]), length(frags[s]))) then begin abort := true; break; end;
+        if (length(frags[s]) > 0) and (not writer(pointer(frags[s]), length(frags[s]))) then begin e^.aborted := true; break; end;
         frags[s] := nil;
-        if (cb <> nil) and (not cb(total, totalsize, wrote)) then begin abort := true; break; end;
+        if (cb <> nil) and (not cb(total, totalsize, wrote)) then begin e^.aborted := true; break; end;
       end;
     end;
-    if abort then result := ZFLATE_EABORTED
+    if e^.aborted then result := ZFLATE_EABORTED
     else begin
       // final empty block (BFINAL=1) plus the footer; reuse this thread's buffer
-      op := 0; bb := 0; bc := 0;
-      put(1, 1); put(1, 2); put(0, 7); flush;
-      packFooter(streamtype, crc, adler, total and $ffffffff);
-      wrote := wrote + op;
-      if (op > 0) and (not writer(buf, op)) then result := ZFLATE_EABORTED
+      e^.op := 0; e^.bb := 0; e^.bc := 0;
+      put(e^, 1, 1); put(e^, 1, 2); put(e^, 0, 7); flush(e^);
+      packFooter(e^, streamtype, crc, adler, total and $ffffffff);
+      wrote := wrote + e^.op;
+      if (e^.op > 0) and (not writer(e^.buf, e^.op)) then result := ZFLATE_EABORTED
       else begin
         if cb <> nil then cb(total, totalsize, wrote);
         result := ZFLATE_OK;
@@ -870,9 +935,8 @@ begin
   except
     result := ZFLATE_EDEFLATE;
   end;
-  if buf <> nil then begin FreeMem(buf); buf := nil; end;
+  zfree(e);
   for var i := 0 to nt-1 do FreeMem(inbuf[i]);
-  zprogress := cb;
 end;
 
 // fmt: ZFLATE_RAW / ZFLATE_ZLIB / ZFLATE_GZIP; picks the sequential or the
@@ -1604,6 +1668,15 @@ initialization
     var c := dword(i);
     for var k := 0 to 7 do if c and 1 <> 0 then c := (c shr 1) xor $edb88320 else c := c shr 1;
     CRCTAB[i] := c;
+  end;
+
+finalization
+  // this thread's warm encoder; other threads release theirs when they end
+  if zdcache <> nil then begin
+    if zdcache^.buf <> nil then FreeMem(zdcache^.buf);
+    if zdcache^.toks <> nil then FreeMem(zdcache^.toks);
+    FreeMem(zdcache);
+    zdcache := nil;
   end;
 
 end.
